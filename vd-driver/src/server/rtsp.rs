@@ -45,41 +45,29 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
 
     while run {
         let (conn_readable, sample) = if let Some(data_rx) = data_rx.as_mut() {
-            (false, data_rx.recv().await.ok())
+            let data_fut = data_rx.recv();
+            // let conn_fut = conn.get_mut().readable();
+            // futures::pin_mut!(data_fut);
+            // futures::pin_mut!(conn_fut);
+
+            // let s = futures::future::select(data_fut, conn_fut).await;
+            // match s {
+            //     futures::future::Either::Left((sample, _)) => {
+            //         let sample = sample?;
+            //         (false, Some(sample))
+            //     }
+            //     futures::future::Either::Right((readable_res, _)) => {
+            //         readable_res?;
+            //         (true, None)
+            //     }
+            // }
+
+            let sample = data_fut.await.ok();
+            (false, sample)
         } else {
             conn.get_ref().readable().await?;
-                (true, None)
+            (true, None)
         };
-
-        // let (conn_readable, sample) = match (playing, data_rx.as_mut()) {
-        //     (true, Some(data_rx)) => {
-        //         let data_fut = data_rx.recv();
-        //         // let conn_fut = conn.get_mut().readable();
-        //         // futures::pin_mut!(data_fut);
-        //         // futures::pin_mut!(conn_fut);
-
-        //         // let s = futures::future::select(data_fut, conn_fut).await;
-        //         // match s {
-        //         //     futures::future::Either::Left((sample, _)) => {
-        //         //         let sample = sample?;
-        //         //         (false, Some(sample))
-        //         //     }
-        //         //     futures::future::Either::Right((readable_res, _)) => {
-        //         //         readable_res?;
-        //         //         (true, None)
-        //         //     }
-        //         // }
-        //         let sample = data_fut.await.ok();
-        //         (false, sample)
-        //     }
-        //     (true, None) => {
-        //         anyhow::bail!("Invalid state: playing but no data_rx");
-        //     }
-        //     (false, _) => {
-        //         conn.get_ref().readable().await?;
-        //         (true, None)
-        //     }
-        // };
 
         if let Some(sample) = sample {
             let timestamp = sample
