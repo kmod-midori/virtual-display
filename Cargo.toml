@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "vd-controller",
+    "vd-driver",
+    "x264-sys",
+    "hwcodec-test",
+    "mfx-dispatch-sys",
+    "mfx-dispatch",
+    "opus-sys",
+    "opus",
+]

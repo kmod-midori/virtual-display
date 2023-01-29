@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <style>
+        textarea {
+            width: 500px;
+            min-height: 75px;
+        }
+    </style>
+</head>
+
+<body>
+    <br />
+
+    Monitors<br />
+    <div id="monitors"></div>
+
+    <br />
+
+    Video<br />
+    <div id="remoteVideos"></div> <br />
+
+
+    <input id="monitor-id" type="text" />
+    <button class="createSessionButton" onclick="window.createSession()"> Join a Broadcast </button><br />
+
+    <script>
+        fetch("/monitors")
+            .then(response => response.json())
+            .then(data => {
+                let monitors = document.getElementById('monitors');
+                monitors.innerText = JSON.stringify(data);
+            }).catch(err => {
+                console.log(err)
+            });
+
+        /* eslint-env browser */
+        window.createSession = async () => {
+            let pc = new RTCPeerConnection({})
+            pc.addEventListener('icecandidate', event => { });
+            pc.addEventListener('iceconnectionstatechange', event => {
+                console.log(pc.iceConnectionState)
+            });
+            pc.addEventListener('track', function (event) {
+                var el = document.createElement(event.track.kind)
+                el.srcObject = event.streams[0]
+                el.autoplay = true
+                el.controls = true
+
+                document.getElementById('remoteVideos').appendChild(el)
+            });
+
+            pc.addTransceiver('video', { 'direction': 'sendrecv' })
+            pc.addTransceiver('audio', { 'direction': 'sendrecv' })
+            let localOffer = await pc.createOffer();
+            await pc.setLocalDescription(localOffer);
+
+            console.log(localOffer);
+
+            let monitorId = document.getElementById('monitor-id').value;
+
+            let sdp_response = await fetch(`/monitors/${monitorId}/sdp`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(localOffer)
+            });
+
+            if (sdp_response.status !== 200) {
+                console.log('Error: ' + sdp_response.status);
+                return;
+            }
+
+            pc.setRemoteDescription(new RTCSessionDescription(await sdp_response.json()))
+        }
+    </script>
+</body>
+
+</html>
