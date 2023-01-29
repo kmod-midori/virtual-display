@@ -1,7 +1,7 @@
 use std::{ffi::CString, str::FromStr};
 
 use windows::{
-    core::{PCSTR, PCWSTR, PWSTR},
+    core::{PCSTR, PCWSTR},
     Win32::{
         Foundation::{
             CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, INVALID_HANDLE_VALUE,

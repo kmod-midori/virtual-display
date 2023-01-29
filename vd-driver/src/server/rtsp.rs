@@ -5,6 +5,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
+use tracing::Instrument;
 use webrtc::{
     media::io::h264_reader::H264Reader,
     rtp::packetizer::Packetizer,
@@ -23,7 +24,9 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
     let header_end_finder = memchr::memmem::Finder::new(b"\r\n\r\n");
 
     let mut run = true;
-    let mut playing = false;
+    // This indicates that the client has setup the stream.
+    let mut data_tx: Option<tokio::sync::broadcast::Sender<crate::utils::Sample>> = None;
+    // This indicates that the client is playing the stream.
     let mut data_rx: Option<tokio::sync::broadcast::Receiver<crate::utils::Sample>> = None;
 
     let clock_rate = 90000;
@@ -41,35 +44,42 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
     let stream_start = SystemTime::now();
 
     while run {
-        let (conn_readable, sample) = match (playing, data_rx.as_mut()) {
-            (true, Some(data_rx)) => {
-                let data_fut = data_rx.recv();
-                // let conn_fut = conn.get_mut().readable();
-                // futures::pin_mut!(data_fut);
-                // futures::pin_mut!(conn_fut);
-
-                // let s = futures::future::select(data_fut, conn_fut).await;
-                // match s {
-                //     futures::future::Either::Left((sample, _)) => {
-                //         let sample = sample?;
-                //         (false, Some(sample))
-                //     }
-                //     futures::future::Either::Right((readable_res, _)) => {
-                //         readable_res?;
-                //         (true, None)
-                //     }
-                // }
-                let sample = data_fut.await.ok();
-                (false, sample)
-            }
-            (true, None) => {
-                anyhow::bail!("Invalid state: playing but no data_rx");
-            }
-            (false, _) => {
-                conn.get_ref().readable().await?;
+        let (conn_readable, sample) = if let Some(data_rx) = data_rx.as_mut() {
+            (false, data_rx.recv().await.ok())
+        } else {
+            conn.get_ref().readable().await?;
                 (true, None)
-            }
         };
+
+        // let (conn_readable, sample) = match (playing, data_rx.as_mut()) {
+        //     (true, Some(data_rx)) => {
+        //         let data_fut = data_rx.recv();
+        //         // let conn_fut = conn.get_mut().readable();
+        //         // futures::pin_mut!(data_fut);
+        //         // futures::pin_mut!(conn_fut);
+
+        //         // let s = futures::future::select(data_fut, conn_fut).await;
+        //         // match s {
+        //         //     futures::future::Either::Left((sample, _)) => {
+        //         //         let sample = sample?;
+        //         //         (false, Some(sample))
+        //         //     }
+        //         //     futures::future::Either::Right((readable_res, _)) => {
+        //         //         readable_res?;
+        //         //         (true, None)
+        //         //     }
+        //         // }
+        //         let sample = data_fut.await.ok();
+        //         (false, sample)
+        //     }
+        //     (true, None) => {
+        //         anyhow::bail!("Invalid state: playing but no data_rx");
+        //     }
+        //     (false, _) => {
+        //         conn.get_ref().readable().await?;
+        //         (true, None)
+        //     }
+        // };
 
         if let Some(sample) = sample {
             let timestamp = sample
@@ -87,7 +97,7 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
 
                 for mut packet in packets {
                     packet.header.timestamp = timestamp;
-                    
+
                     let len = packet.marshal_size();
                     let len_be = (len as u16).to_be_bytes();
                     let mut buf = vec![0; len + 4];
@@ -174,14 +184,14 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
 
                     match method {
                         "OPTIONS" => {
-                            tracing::debug!("OPTIONS");
+                            tracing::debug!("=> OPTIONS");
 
                             response_lines.push(
                                 "Public: OPTIONS, DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE".into(),
                             );
                         }
                         "DESCRIBE" => {
-                            tracing::debug!("DESCRIBE");
+                            tracing::debug!("=> DESCRIBE");
 
                             response_lines.push("Content-Type: application/sdp".into());
                             response_body = concat!(
@@ -197,7 +207,7 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
                             .to_vec();
                         }
                         "SETUP" => {
-                            tracing::debug!("SETUP");
+                            tracing::debug!("=> SETUP");
 
                             let transport = req
                                 .headers
@@ -208,29 +218,34 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
                             let transport = std::str::from_utf8(transport)?;
                             response_lines.push(format!("Transport: {}", transport));
 
-                            let data_rx_ = if let Some(monitor) = get_app().monitors().get(&0) {
-                                monitor.encoded_tx.subscribe()
+                            let data_tx_ = if let Some(monitor) = get_app().monitors().get(&0) {
+                                monitor.encoded_tx.clone()
                             } else {
                                 anyhow::bail!("Monitor 0 not found");
                             };
 
-                            data_rx = Some(data_rx_);
+                            data_tx = Some(data_tx_);
                         }
                         "TEARDOWN" => {
-                            tracing::debug!("TEARDOWN");
+                            tracing::debug!("=> TEARDOWN");
 
+                            data_tx = None;
                             data_rx = None;
                             run = false;
                         }
                         "PLAY" => {
-                            tracing::debug!("PLAY");
+                            tracing::debug!("=> PLAY");
 
-                            playing = true;
+                            if let Some(data_tx) = data_tx.as_ref() {
+                                data_rx = Some(data_tx.subscribe());
+                            } else {
+                                anyhow::bail!("Invalid state: PLAY without SETUP");
+                            }
                         }
                         "PAUSE" => {
-                            tracing::debug!("PAUSE");
+                            tracing::debug!("=> PAUSE");
 
-                            playing = false;
+                            data_rx = None;
                         }
                         _ => {}
                     }
@@ -260,13 +275,20 @@ async fn rtsp_server() -> Result<()> {
     loop {
         let (socket, addr) = listener.accept().await?;
 
-        tracing::info!(?addr, "New TCP connection");
+        let span = tracing::info_span!("rtsp", %addr);
+        {
+            let _enter = span.enter();
+            tracing::info!("New connection");
+        }
 
-        tokio::spawn(async move {
-            if let Err(e) = handle_conn(socket).await {
-                tracing::error!(?e, "Failed to handle connection");
+        tokio::spawn(
+            async move {
+                if let Err(e) = handle_conn(socket).await {
+                    tracing::info!(?e, "Connection terminated");
+                }
             }
-        });
+            .instrument(span),
+        );
     }
 }
 

@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let mut pipeline = Pipeline::new(session, 1920, 1080, 60)?;
-    dbg!(pipeline.pps());
+
     for i in 0..60 {
         let start = std::time::Instant::now();
         let (buf_idx, buf_y, buf_uv) = pipeline.get_free_surface().unwrap();

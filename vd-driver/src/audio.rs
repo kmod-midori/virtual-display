@@ -54,7 +54,7 @@ pub fn setup_audio() -> Result<broadcast::Sender<Sample>> {
                 data = &data[to_copy..];
 
                 if buffer_filled == packet_size {
-                    // We have a full packet, encode it
+                    tracing::trace!("Got a full audio packet, encoding it");
                     match encoder.encode_f32(&buffer, &mut encoded_buffer) {
                         Ok(len) => {
                             let sample = Sample::new(&encoded_buffer[..len], pts, packet_duration);

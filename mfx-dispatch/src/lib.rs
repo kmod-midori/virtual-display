@@ -83,14 +83,11 @@ impl Drop for Session {
 pub struct Pipeline {
     session: Session,
 
-    width: u16,
+    _width: u16,
     buffer_width: u16,
-    height: u16,
+    _height: u16,
     buffer_height: u16,
-    framerate: u16,
-
-    sps: Vec<u8>,
-    pps: Vec<u8>,
+    _framerate: u16,
 
     surfaces: Vec<(Vec<u8>, ffi::mfxFrameSurface1)>,
 
@@ -105,7 +102,7 @@ impl Pipeline {
             | ffi::MFX_IOPATTERN_OUT_SYSTEM_MEMORY as u16;
 
         enc_par.AsyncDepth = 1;
-        enc_par.__bindgen_anon_1.mfx.CodecProfile = ffi::MFX_PROFILE_AVC_BASELINE as u16;
+
         enc_par
             .__bindgen_anon_1
             .mfx
@@ -120,6 +117,7 @@ impl Pipeline {
             .IdrInterval = 1;
 
         enc_par.__bindgen_anon_1.mfx.CodecId = ffi::MFX_CODEC_AVC as u32;
+        // enc_par.__bindgen_anon_1.mfx.CodecProfile = ffi::MFX_PROFILE_AVC_BASELINE as u16;
         enc_par
             .__bindgen_anon_1
             .mfx
@@ -186,6 +184,27 @@ impl Pipeline {
             .__bindgen_anon_1
             .Height = buffer_height;
 
+        let mut coding_option_2: ffi::mfxExtCodingOption2 = unsafe { std::mem::zeroed() };
+        coding_option_2.Header = ffi::mfxExtBuffer {
+            BufferId: ffi::MFX_EXTBUFF_CODING_OPTION2 as u32,
+            BufferSz: std::mem::size_of::<ffi::mfxExtCodingOption2>() as u32,
+        };
+        coding_option_2.BRefType = ffi::MFX_B_REF_OFF as u16; // Disable B-frame
+
+        let mut coding_option_3: ffi::mfxExtCodingOption3 = unsafe { std::mem::zeroed() };
+        coding_option_3.Header = ffi::mfxExtBuffer {
+            BufferId: ffi::MFX_EXTBUFF_CODING_OPTION3 as u32,
+            BufferSz: std::mem::size_of::<ffi::mfxExtCodingOption3>() as u32,
+        };
+        coding_option_3.ScenarioInfo = ffi::MFX_SCENARIO_DISPLAY_REMOTING as u16;
+        coding_option_3.ContentInfo = ffi::MFX_CONTENT_NON_VIDEO_SCREEN as u16;
+
+        let ext_params =
+            &mut [&mut coding_option_2 as *mut ffi::mfxExtCodingOption2 as *mut ffi::mfxExtBuffer];
+
+        enc_par.ExtParam = ext_params.as_mut_ptr();
+        enc_par.NumExtParam = ext_params.len() as u16;
+
         unsafe {
             check_error(ffi::MFXVideoENCODE_Query(
                 session.raw,
@@ -231,53 +250,12 @@ impl Pipeline {
         }
 
         let mut active_enc_par: ffi::mfxVideoParam = unsafe { std::mem::zeroed() };
-
-        let mut sps_buffer = vec![0u8; 128];
-        let mut pps_buffer = vec![0u8; 128];
-        let mut extra_data = ffi::mfxExtCodingOptionSPSPPS {
-            Header: ffi::mfxExtBuffer {
-                BufferId: ffi::MFX_EXTBUFF_CODING_OPTION_SPSPPS as u32,
-                BufferSz: std::mem::size_of::<ffi::mfxExtCodingOptionSPSPPS>() as u32,
-            },
-            SPSBuffer: sps_buffer.as_mut_ptr(),
-            PPSBuffer: pps_buffer.as_mut_ptr(),
-            SPSBufSize: sps_buffer.len() as u16,
-            PPSBufSize: pps_buffer.len() as u16,
-            SPSId: 0,
-            PPSId: 0,
-        };
-
-        let mut coding_option_2: ffi::mfxExtCodingOption2 = unsafe { std::mem::zeroed() };
-        coding_option_2.Header = ffi::mfxExtBuffer {
-            BufferId: ffi::MFX_EXTBUFF_CODING_OPTION2 as u32,
-            BufferSz: std::mem::size_of::<ffi::mfxExtCodingOption2>() as u32,
-        };
-        coding_option_2.BRefType = ffi::MFX_B_REF_OFF as u16; // Disable B-frame
-
-        let mut coding_option_3: ffi::mfxExtCodingOption3 = unsafe { std::mem::zeroed() };
-        coding_option_3.Header = ffi::mfxExtBuffer {
-            BufferId: ffi::MFX_EXTBUFF_CODING_OPTION3 as u32,
-            BufferSz: std::mem::size_of::<ffi::mfxExtCodingOption3>() as u32,
-        };
-        coding_option_3.ScenarioInfo = ffi::MFX_SCENARIO_DISPLAY_REMOTING as u16;
-        coding_option_3.ContentInfo = ffi::MFX_CONTENT_NON_VIDEO_SCREEN as u16;
-
-        let ext_params = &mut [
-            &mut extra_data as *mut ffi::mfxExtCodingOptionSPSPPS as *mut ffi::mfxExtBuffer,
-            &mut coding_option_2 as *mut ffi::mfxExtCodingOption2 as *mut ffi::mfxExtBuffer,
-        ];
-        active_enc_par.ExtParam = ext_params.as_mut_ptr();
-        active_enc_par.NumExtParam = ext_params.len() as u16;
-
         unsafe {
             check_error(ffi::MFXVideoENCODE_GetVideoParam(
                 session.raw,
                 &mut active_enc_par,
             ))?;
         }
-
-        let sps = sps_buffer[..extra_data.SPSBufSize as usize].to_vec();
-        let pps = pps_buffer[..extra_data.PPSBufSize as usize].to_vec();
 
         let encoded_buffer_size = unsafe {
             active_enc_par
@@ -296,14 +274,11 @@ impl Pipeline {
 
         Ok(Self {
             session,
-            width,
-            height,
+            _width: width,
+            _height: height,
             buffer_width: buffer_width as u16,
             buffer_height: buffer_height as u16,
-            framerate,
-
-            sps,
-            pps,
+            _framerate: framerate,
 
             surfaces,
 
@@ -329,14 +304,6 @@ impl Pipeline {
 
     pub fn stride(&self) -> usize {
         self.buffer_width as usize
-    }
-
-    pub fn sps(&self) -> &[u8] {
-        &self.sps
-    }
-
-    pub fn pps(&self) -> &[u8] {
-        &self.pps
     }
 
     pub fn encode_frame(
