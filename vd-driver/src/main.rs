@@ -5,7 +5,7 @@ use anyhow::Result;
 use monitor::Monitor;
 use windows::Win32::Media::MediaFoundation::{MFStartup, MFSTARTUP_FULL};
 
-use std::{io::Read, time::SystemTime};
+use std::{io::Read, time::{SystemTime, Duration}};
 
 use once_cell::sync::OnceCell;
 
@@ -121,7 +121,6 @@ pub fn main() -> Result<()> {
             None
         }
     };
-    // let audio_data_tx = None;
 
     APPLICATION
         .set(ApplicationHandle::new(audio_data_tx))
@@ -142,8 +141,6 @@ pub fn main() -> Result<()> {
     tracing::info!("Initialized");
 
     let descriptor: win32::SecurityDescriptor = "D:(A;;0xc01f0003;;;AU)".parse()?;
-
-    // let frame_buffer_mutex = win32::Mutex::new("Global\\VdMonitor0FBMutex", Some(&descriptor))?;
 
     let new_frame_event = win32::Event::new(
         "Global\\VdMonitor0NewFrameEvent",
@@ -193,21 +190,41 @@ pub fn main() -> Result<()> {
         initial_configuration.2,
     );
 
-    loop {
-        let w = win32::wait_multiple(&[&new_frame_event, &configure_event], None)?;
+    let task = async move {
+        let _ = new_frame_event.wait(None); // Sync with the first available frame
+        
+        let mut ticker = tokio::time::interval(Duration::from_millis(16));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        match w {
-            win32::WaitState::Signaled(0) | win32::WaitState::Abandoned(0) => {
-                // let _guard = frame_buffer_mutex.lock()?;
-                monitor.send_frame(
-                    &frame_buffer_mapping.buf()[..1920 * 1080 * 4],
-                    SystemTime::now(),
-                );
-            }
-            win32::WaitState::Signaled(1) | win32::WaitState::Abandoned(1) => {
-                tracing::info!("Configure");
-            }
-            _ => unreachable!(),
+        loop {
+            monitor.send_frame(
+                &frame_buffer_mapping.buf()[..1920 * 1080 * 4],
+                SystemTime::now(),
+            );
+
+            let _ = ticker.tick().await;
         }
-    }
+    };
+
+    // loop {
+    //     let w = win32::wait_multiple(&[&new_frame_event, &configure_event], None)?;
+
+    //     match w {
+    //         win32::WaitState::Signaled(0) | win32::WaitState::Abandoned(0) => {
+    //             // let _guard = frame_buffer_mutex.lock()?;
+    //             monitor.send_frame(
+    //                 &frame_buffer_mapping.buf()[..1920 * 1080 * 4],
+    //                 SystemTime::now(),
+    //             );
+    //         }
+    //         win32::WaitState::Signaled(1) | win32::WaitState::Abandoned(1) => {
+    //             tracing::info!("Configure");
+    //         }
+    //         _ => unreachable!(),
+    //     }
+    // }
+
+    get_tokio_runtime().block_on(task);
+
+    Ok(())
 }

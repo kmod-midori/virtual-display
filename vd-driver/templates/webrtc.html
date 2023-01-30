@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Viewer{% endblock %}
+
+
+{% block content %}
+<button class="createSessionButton" onclick="window.createSession({{ id }})">Join</button><br />
+
+<div id="remoteVideos"></div>
+<script>
+    /* eslint-env browser */
+    window.createSession = async (monitorId) => {
+        let pc = new RTCPeerConnection({})
+        pc.addEventListener('icecandidate', event => { });
+        pc.addEventListener('iceconnectionstatechange', event => {
+            console.log(pc.iceConnectionState)
+        });
+        pc.addEventListener('track', function (event) {
+            var el = document.createElement(event.track.kind)
+            el.srcObject = event.streams[0]
+            el.autoplay = true
+            el.controls = true
+
+            document.getElementById('remoteVideos').appendChild(el)
+        });
+
+        pc.addTransceiver('video', { 'direction': 'sendrecv' })
+        pc.addTransceiver('audio', { 'direction': 'sendrecv' })
+        let localOffer = await pc.createOffer();
+        await pc.setLocalDescription(localOffer);
+
+        console.log(localOffer);
+
+        let sdp_response = await fetch(`/webrtc/${monitorId}/sdp`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(localOffer)
+        });
+
+        if (sdp_response.status !== 200) {
+            console.log('Error: ' + sdp_response.status);
+            return;
+        }
+
+        pc.setRemoteDescription(new RTCSessionDescription(await sdp_response.json()))
+    }
+</script>
+{% endblock %}

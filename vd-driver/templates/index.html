@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}Home{% endblock %}
+
+
+{% block content %}
+<div id="header">
+    <div class="wrap mg-1">
+        <h1>Virtual Displays</h1>
+    </div>
+</div>
+
+<div id="content" class="pd-1">
+    {% for monitor in monitors %}
+    <div class="monitor card-box pd-1">
+        {% let index = monitor.0 %}
+        {% let monitor = monitor.1 %}
+        <h2 class="b-b">Virtual Monitor #{{ index }} ({{ monitor.width() }} * {{ monitor.height() }} @ {{ monitor.framerate() }} Hz)</h2>
+        <table class="table mt-1">
+            <thead>
+                <tr>
+                    <th>Protocol</th>
+                    <th>URL</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Raw TCP (H.264 Annex B, Video Only)</td>
+                    <!-- <td><a class="tcp-url" data-port="1234" href="#"></a></td> -->
+                    <td>Unavailable</td>
+                </tr>
+                <tr>
+                    <td>RTSP</td>
+                    <td><a class="rtsp-url" data-port="{{ rtsp_port }}" data-index="{{ index }}" href="#"></a></td>
+                </tr>
+                <tr>
+                    <td>WebRTC</td>
+                    <td><a href="/webrtc/{{ index }}">View</a></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    {% endfor %}
+</div>
+
+<script>
+    let hostname = window.location.hostname;
+    document.querySelectorAll(".tcp-url").forEach((el) => {
+        let port = el.getAttribute("data-port");
+        let url = `tcp://${hostname}:${port}`;
+        el.setAttribute("href", url);
+        el.innerText = url;
+    });
+    document.querySelectorAll(".rtsp-url").forEach((el) => {
+        let port = el.getAttribute("data-port");
+        let index = el.getAttribute("data-index");
+        let url = `rtsp://${hostname}:${port}/${index}`;
+        el.setAttribute("href", url);
+        el.innerText = url;
+    });
+
+</script>
+{% endblock %}

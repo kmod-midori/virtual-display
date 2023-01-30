@@ -1,16 +1,13 @@
 use std::time::SystemTime;
 
 use anyhow::Result;
+use rtp::{packetizer::Packetizer, sequence::Sequencer};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
 use tracing::Instrument;
-use webrtc::{
-    media::io::h264_reader::H264Reader,
-    rtp::packetizer::Packetizer,
-    util::{Marshal, MarshalSize},
-};
+use webrtc_util::{Marshal, MarshalSize};
 
 use crate::get_app;
 
@@ -30,13 +27,13 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
     let mut data_rx: Option<tokio::sync::broadcast::Receiver<crate::utils::Sample>> = None;
 
     let clock_rate = 90000;
-    let sequencer: Box<dyn webrtc::rtp::sequence::Sequencer + Send + Sync> =
-        Box::new(webrtc::rtp::sequence::new_random_sequencer());
-    let mut packetizer = webrtc::rtp::packetizer::new_packetizer(
+    let sequencer: Box<dyn Sequencer + Send + Sync> =
+        Box::new(rtp::sequence::new_random_sequencer());
+    let mut packetizer = rtp::packetizer::new_packetizer(
         1200,
         96, // Value is handled when writing
         0,  // Value is handled when writing
-        Box::<webrtc::rtp::codecs::h264::H264Payloader>::default(),
+        Box::<rtp::codecs::h264::H264Payloader>::default(),
         sequencer.clone(),
         clock_rate,
     );
@@ -44,29 +41,45 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
     let stream_start = SystemTime::now();
 
     while run {
-        let (conn_readable, sample) = if let Some(data_rx) = data_rx.as_mut() {
-            let data_fut = data_rx.recv();
-            // let conn_fut = conn.get_mut().readable();
-            // futures::pin_mut!(data_fut);
-            // futures::pin_mut!(conn_fut);
+        let (conn_readable, sample) = match data_rx.as_mut() {
+            Some(data_rx) => {
+                // We are playing
+                // let data_fut = ;
+                // let conn_fut = ;
 
-            // let s = futures::future::select(data_fut, conn_fut).await;
-            // match s {
-            //     futures::future::Either::Left((sample, _)) => {
-            //         let sample = sample?;
-            //         (false, Some(sample))
-            //     }
-            //     futures::future::Either::Right((readable_res, _)) => {
-            //         readable_res?;
-            //         (true, None)
-            //     }
-            // }
+                // tokio::select! {
+                //     sample = data_rx.recv() => {
+                //         let sample = sample.ok();
+                //         (false, sample)
+                //     }
+                //     _ = conn.get_mut().readable() => {
+                //         (true, None)
+                //     }
+                // }
 
-            let sample = data_fut.await.ok();
-            (false, sample)
-        } else {
-            conn.get_ref().readable().await?;
-            (true, None)
+                // // futures::pin_mut!(data_fut);
+                // // futures::pin_mut!(conn_fut);
+
+                // // let s = futures::future::select(data_fut, conn_fut).await;
+                // // match s {
+                // //     futures::future::Either::Left((sample, _)) => {
+                // //         let sample = sample?;
+                // //         (false, Some(sample))
+                // //     }
+                // //     futures::future::Either::Right((readable_res, _)) => {
+                // //         readable_res?;
+                // //         (true, None)
+                // //     }
+                // // }
+
+                let sample = data_rx.recv().await.ok();
+                (false, sample)
+            }
+            None => {
+                // We are not playing
+                conn.get_ref().readable().await?;
+                (true, None)
+            }
         };
 
         if let Some(sample) = sample {
@@ -77,7 +90,8 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
                 .unwrap_or(0);
 
             let data = &sample.data[..];
-            let mut h264 = H264Reader::new(std::io::Cursor::new(data));
+            let mut h264 =
+                webrtc_media::io::h264_reader::H264Reader::new(std::io::Cursor::new(data));
 
             while let Ok(nal) = h264.next_nal() {
                 let samples = (sample.duration.as_secs_f64() * clock_rate as f64) as u32;
@@ -102,6 +116,12 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
         if conn_readable {
             // This should not block, because we are waiting for readable
             let buf = conn.fill_buf().await?;
+            if buf.is_empty() {
+                // EOF
+                run = false;
+                continue;
+            }
+
             if buf[0] == b'$' {
                 // RTP/RTCP
                 conn.consume(1);
@@ -167,7 +187,7 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
                     }
 
                     let mut response_lines =
-                        vec!["RTSP/1.0 200 OK".to_string(), format!("CSeq: {}", cseq)];
+                        vec!["RTSP/1.0 200 OK".to_string(), format!("CSeq: {cseq}")];
                     let mut response_body = vec![];
 
                     match method {
@@ -204,7 +224,7 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
                                 .ok_or_else(|| anyhow::anyhow!("Request has no Transport header"))?
                                 .value;
                             let transport = std::str::from_utf8(transport)?;
-                            response_lines.push(format!("Transport: {}", transport));
+                            response_lines.push(format!("Transport: {transport}"));
 
                             let data_tx_ = if let Some(monitor) = get_app().monitors().get(&0) {
                                 monitor.encoded_tx.clone()

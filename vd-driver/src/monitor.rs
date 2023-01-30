@@ -1,5 +1,5 @@
 use std::{
-    sync::{Arc, Mutex},
+    sync::{atomic::AtomicU32, Arc, Mutex},
     time::{Duration, SystemTime},
 };
 
@@ -13,7 +13,6 @@ use crate::{get_app, utils::Sample};
 #[derive(Debug)]
 enum EncodingCommand {
     NewFrame(SystemTime),
-    NewClient,
     Configure {
         width: u32,
         height: u32,
@@ -22,13 +21,25 @@ enum EncodingCommand {
 }
 
 #[derive(Debug, Clone)]
-struct TaskContext {
-    encoding_cmd_tx: channel::Sender<EncodingCommand>,
-}
-
-#[derive(Debug, Clone)]
 pub struct MonitorHandle {
     pub encoded_tx: broadcast::Sender<Sample>,
+    width: Arc<AtomicU32>,
+    height: Arc<AtomicU32>,
+    framerate: Arc<AtomicU32>,
+}
+
+impl MonitorHandle {
+    pub fn width(&self) -> u32 {
+        self.width.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn framerate(&self) -> u32 {
+        self.framerate.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 pub struct Monitor {
@@ -36,6 +47,10 @@ pub struct Monitor {
     bgra_buffer: Arc<Mutex<Vec<u8>>>,
     /// Connector index of this monitor.
     index: u32,
+
+    width: Arc<AtomicU32>,
+    height: Arc<AtomicU32>,
+    framerate: Arc<AtomicU32>,
 }
 
 impl Monitor {
@@ -45,10 +60,6 @@ impl Monitor {
 
         let bgra_buffer = Arc::new(Mutex::new(Vec::new()));
 
-        // let ctx = TaskContext {
-        //     encoding_cmd_tx: cmd_tx.clone(),
-        // };
-
         let b = bgra_buffer.clone();
         let t = data_tx.clone();
         std::thread::spawn(move || {
@@ -57,10 +68,17 @@ impl Monitor {
             }
         });
 
+        let width = Arc::new(AtomicU32::new(0));
+        let height = Arc::new(AtomicU32::new(0));
+        let framerate = Arc::new(AtomicU32::new(0));
+
         get_app().register_monitor(
             index,
             MonitorHandle {
                 encoded_tx: data_tx,
+                width: width.clone(),
+                height: height.clone(),
+                framerate: framerate.clone(),
             },
         );
 
@@ -69,6 +87,10 @@ impl Monitor {
             bgra_buffer,
 
             index,
+
+            width,
+            height,
+            framerate,
         }
     }
 
@@ -81,6 +103,13 @@ impl Monitor {
                 framerate,
             })
             .ok();
+
+        self.width
+            .store(width, std::sync::atomic::Ordering::Relaxed);
+        self.height
+            .store(height, std::sync::atomic::Ordering::Relaxed);
+        self.framerate
+            .store(framerate, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Notify the monitor that a new frame is available.
@@ -119,7 +148,6 @@ fn encoding_thread(
     let mut framerate = 0;
     let mut sample_duration = Duration::from_secs_f64(0.0);
 
-    // let mut new_client = false;
     let mut last_receiver_count = 0;
 
     while let Ok(cmd) = cmd_rx.recv() {
@@ -134,7 +162,16 @@ fn encoding_thread(
 
                 let receiver_count = data_tx.receiver_count();
                 if receiver_count == 0 {
+                    if last_receiver_count > 0 {
+                        tracing::info!("No more connected clients, stopping encoding");
+                        last_receiver_count = 0;
+                    }
                     continue;
+                } else if receiver_count > last_receiver_count {
+                    if last_receiver_count == 0 {
+                        tracing::info!("New client connected, starting encoding");
+                    }
+                    tracing::info!("New client connected, forcing keyframe");
                 }
 
                 let dst_stride = encoder.stride();
@@ -148,7 +185,9 @@ fn encoding_thread(
 
                 crate::utils::bgra2nv12(width, height, &src, Some(dst_stride), buf_y, buf_uv)?;
 
-                if let Some(data) = encoder.encode_frame(buf_index, receiver_count > last_receiver_count)? {
+                if let Some(data) =
+                    encoder.encode_frame(buf_index, receiver_count > last_receiver_count)?
+                {
                     tracing::trace!("Sending frame");
 
                     let sample = Sample::new(data, timestamp, sample_duration);
@@ -156,9 +195,6 @@ fn encoding_thread(
                 }
 
                 last_receiver_count = receiver_count;
-            }
-            EncodingCommand::NewClient => {
-                // new_client = true;
             }
             EncodingCommand::Configure {
                 width: width_,
