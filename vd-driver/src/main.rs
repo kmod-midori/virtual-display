@@ -142,6 +142,8 @@ pub fn main() -> Result<()> {
 
     let descriptor: win32::SecurityDescriptor = "D:(A;;0xc01f0003;;;AU)".parse()?;
 
+    let frame_buffer_mutex = win32::Mutex::new("Global\\VdMonitor0FBMutex", Some(&descriptor))?;
+
     let new_frame_event = win32::Event::new(
         "Global\\VdMonitor0NewFrameEvent",
         Some(&descriptor),
@@ -171,7 +173,7 @@ pub fn main() -> Result<()> {
     let mut monitor = Monitor::new(0);
 
     let initial_configuration = {
-        // let _guard = frame_buffer_mutex.lock()?;
+        let _guard = frame_buffer_mutex.lock()?;
         read_configuration(frame_buffer_mapping.buf())
     };
 
@@ -180,7 +182,7 @@ pub fn main() -> Result<()> {
     } else {
         tracing::info!("Waiting for initial configuration");
         configure_event.wait(None)?;
-        // let _guard = frame_buffer_mutex.lock()?;
+        let _guard = frame_buffer_mutex.lock()?;
         read_configuration(frame_buffer_mapping.buf()).expect("Failed to read configuration")
     };
 
@@ -192,15 +194,17 @@ pub fn main() -> Result<()> {
 
     let task = async move {
         let _ = new_frame_event.wait(None); // Sync with the first available frame
-        
+
         let mut ticker = tokio::time::interval(Duration::from_millis(16));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
+            let guard = frame_buffer_mutex.lock().unwrap();
             monitor.send_frame(
                 &frame_buffer_mapping.buf()[..1920 * 1080 * 4],
                 SystemTime::now(),
             );
+            drop(guard);
 
             let _ = ticker.tick().await;
         }
