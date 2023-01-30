@@ -1,7 +1,12 @@
 use std::time::SystemTime;
 
 use anyhow::Result;
+use axum::http::StatusCode;
 use rtp::{packetizer::Packetizer, sequence::Sequencer};
+use sdp::{
+    description::media::{MediaName, RangedPort},
+    MediaDescription, SessionDescription,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -13,6 +18,61 @@ use crate::get_app;
 
 const RTSP_PROTOCOL: &[u8] = b"RTSP/1.0\r\n";
 const HTTP_PROTOCOL: &[u8] = b"HTTP/1.1\r\n";
+
+fn video_sdp() -> String {
+    // m=video 0 RTP/AVP/TCP 96
+    let media_desc = MediaDescription {
+        media_name: MediaName {
+            media: "video".into(),
+            port: RangedPort {
+                value: 0,
+                range: None,
+            },
+            protos: vec!["RTP".into(), "AVP".into(), "TCP".into()],
+            // Taken care of by `with_codec`.
+            formats: vec![],
+        },
+        ..Default::default()
+    }
+    .with_codec(96, "H264".into(), 90000, 0, Default::default());
+
+    let origin = sdp::description::session::Origin {
+        username: "-".into(),
+        session_id: 0,
+        session_version: 0,
+        network_type: "IN".into(),
+        address_type: "IP4".into(),
+        unicast_address: "0.0.0.0".into(),
+    };
+
+    let conn_info = sdp::description::common::ConnectionInformation {
+        network_type: "IN".into(),
+        address_type: "IP4".into(),
+        address: Some(sdp::description::common::Address {
+            address: "0.0.0.0".into(),
+            ttl: None,
+            range: None,
+        }),
+    };
+
+    let sdp = SessionDescription {
+        version: 0,
+        origin,
+        session_name: "Display 0".into(),
+        connection_information: Some(conn_info),
+        media_descriptions: vec![media_desc],
+        ..Default::default()
+    };
+
+    sdp.marshal()
+}
+
+fn find_and_decode_header(headers: &[httparse::Header], name: &str) -> Option<String> {
+    headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case(name))
+        .and_then(|h| String::from_utf8(h.value.to_vec()).ok())
+}
 
 async fn handle_conn(conn: TcpStream) -> Result<()> {
     let mut conn = tokio::io::BufReader::with_capacity(1024 * 10, conn);
@@ -166,7 +226,7 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
                         .value;
                     let cseq: u64 = std::str::from_utf8(cseq)?.parse()?;
 
-                    let content_length: Option<u32> = req
+                    let req_content_length: Option<u32> = req
                         .headers
                         .iter()
                         .find(|h| h.name.eq_ignore_ascii_case("content-length"))
@@ -175,7 +235,7 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
                         .and_then(|v| v.parse().ok());
 
                     // Consume the body
-                    if let Some(content_length) = content_length {
+                    if let Some(content_length) = req_content_length {
                         if content_length > 0 {
                             if content_length > 1024 * 1024 {
                                 anyhow::bail!("Content-Length too large");
@@ -186,8 +246,9 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
                         }
                     }
 
-                    let mut response_lines =
-                        vec!["RTSP/1.0 200 OK".to_string(), format!("CSeq: {cseq}")];
+                    let mut status_code = StatusCode::OK;
+
+                    let mut response_lines = vec![];
                     let mut response_body = vec![];
 
                     match method {
@@ -201,38 +262,23 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
                         "DESCRIBE" => {
                             tracing::debug!("=> DESCRIBE");
 
-                            response_lines.push("Content-Type: application/sdp".into());
-                            response_body = concat!(
-                                "v=0\n",
-                                "o=- 0 0 IN IP4 127.0.0.1\n",
-                                "s=No Name\n",
-                                "c=IN IP4 127.0.0.1\n",
-                                "t=0 0\n",
-                                "m=video 0 RTP/AVP/TCP 96\n",
-                                "a=rtpmap:96 H264/90000\n",
-                            )
-                            .as_bytes()
-                            .to_vec();
+                            response_lines.push("Content-Type: application/sdp".to_string());
+                            response_body = video_sdp().as_bytes().to_vec();
                         }
                         "SETUP" => {
                             tracing::debug!("=> SETUP");
 
-                            let transport = req
-                                .headers
-                                .iter()
-                                .find(|h| h.name.eq_ignore_ascii_case("transport"))
-                                .ok_or_else(|| anyhow::anyhow!("Request has no Transport header"))?
-                                .value;
-                            let transport = std::str::from_utf8(transport)?;
-                            response_lines.push(format!("Transport: {transport}"));
+                            let monitor_id = 0;
 
-                            let data_tx_ = if let Some(monitor) = get_app().monitors().get(&0) {
-                                monitor.encoded_tx.clone()
+                            if let Some(monitor) = get_app().monitors().get(&monitor_id) {
+                                // Force TCP mode
+                                response_lines.push("Transport: RTP/AVP/TCP;unicast;interleaved=0-1".to_string());
+
+                                data_tx = Some(monitor.encoded_tx.clone());
                             } else {
-                                anyhow::bail!("Monitor 0 not found");
+                                tracing::error!("Monitor {} not found", monitor_id);
+                                status_code = StatusCode::NOT_FOUND;
                             };
-
-                            data_tx = Some(data_tx_);
                         }
                         "TEARDOWN" => {
                             tracing::debug!("=> TEARDOWN");
@@ -247,7 +293,8 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
                             if let Some(data_tx) = data_tx.as_ref() {
                                 data_rx = Some(data_tx.subscribe());
                             } else {
-                                anyhow::bail!("Invalid state: PLAY without SETUP");
+                                tracing::error!("Invalid state: PLAY without SETUP");
+                                status_code = StatusCode::BAD_REQUEST;
                             }
                         }
                         "PAUSE" => {
@@ -258,16 +305,32 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
                         _ => {}
                     }
 
+                    conn.write_all(
+                        format!(
+                            "RTSP/1.0 {} {}\r\nCSeq: {}\r\n",
+                            status_code.as_u16(),
+                            status_code.canonical_reason().unwrap_or(""), // Should never be None in our use case
+                            cseq
+                        )
+                        .as_bytes(),
+                    )
+                    .await?;
+
                     if !response_body.is_empty() {
-                        response_lines.push(format!("Content-Length: {}", response_body.len()));
+                        conn.write_all(
+                            format!("Content-Length: {}\r\n", response_body.len()).as_bytes(),
+                        )
+                        .await?;
                     }
 
                     conn.write_all(response_lines.join("\r\n").as_bytes())
                         .await?;
                     conn.write_all(b"\r\n\r\n").await?;
+
                     if !response_body.is_empty() {
                         conn.write_all(&response_body).await?;
                     }
+                    
                     conn.flush().await?;
                 }
             }
