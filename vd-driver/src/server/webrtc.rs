@@ -43,6 +43,8 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
         loop {
             match data_rx.recv().await {
                 Ok(sample) => {
+                    sample.record_end_to_end_latency();
+                    
                     let data = &sample.data[..];
                     let mut h264 = H264Reader::new(std::io::Cursor::new(data));
 

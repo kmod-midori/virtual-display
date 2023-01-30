@@ -13,7 +13,16 @@ pub fn setup_audio() -> Result<broadcast::Sender<Sample>> {
     let device = host
         .default_output_device()
         .ok_or_else(|| anyhow!("No output device found"))?;
+
+    if let Ok(name) = device.name() {
+        tracing::info!("Using audio device: {}", name);
+    } else {
+        tracing::info!("Using audio device: {:?}", device.name());
+    }
+
     let audio_cfg = device.default_output_config()?;
+
+    dbg!(&audio_cfg);
 
     let channel_count = audio_cfg.channels();
     let sample_rate = audio_cfg.sample_rate().0;
@@ -41,9 +50,11 @@ pub fn setup_audio() -> Result<broadcast::Sender<Sample>> {
     let stream = device.build_input_stream(
         &audio_cfg.config(),
         move |mut data: &[f32], _callback_info| {
-            if data_tx.receiver_count() == 0 {
-                return;
-            }
+            // if data_tx.receiver_count() == 0 {
+            //     return;
+            // }
+
+            dbg!(data);
 
             let pts = std::time::SystemTime::now();
 

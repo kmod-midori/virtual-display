@@ -17,6 +17,7 @@ mod server;
 mod utils;
 mod variant;
 mod win32;
+mod metrics;
 
 use app::ApplicationHandle;
 
@@ -44,28 +45,6 @@ pub extern "C" fn vd_init() {
     }
 
     tracing::info!("vd_init");
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn vd_monitor_send_frame(
-    monitor: *mut Monitor,
-    in_buffer: *const u8,
-    len: usize,
-) {
-    let monitor = &mut *monitor;
-    let buffer = std::slice::from_raw_parts(in_buffer, len);
-    monitor.send_frame(buffer, SystemTime::now());
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn vd_monitor_configure(
-    monitor: *mut Monitor,
-    width: u32,
-    height: u32,
-    framerate: u32,
-) {
-    let monitor = unsafe { &mut *monitor };
-    monitor.configure(width, height, framerate);
 }
 
 fn read_configuration(buf: &[u8]) -> Option<(u32, u32, u32)> {
@@ -97,6 +76,8 @@ pub fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .init();
+
+    metrics::init();
 
     // Minimize the latency
     TOKIO_RUNTIME

@@ -75,6 +75,8 @@ fn find_and_decode_header(headers: &[httparse::Header], name: &str) -> Option<St
 }
 
 async fn handle_conn(conn: TcpStream) -> Result<()> {
+    conn.set_nodelay(true).ok();
+    
     let mut conn = tokio::io::BufReader::with_capacity(1024 * 10, conn);
 
     let rtsp_finder = memchr::memmem::Finder::new(RTSP_PROTOCOL);
@@ -143,6 +145,8 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
         };
 
         if let Some(sample) = sample {
+            sample.record_end_to_end_latency();
+
             let timestamp = sample
                 .timestamp
                 .duration_since(stream_start)
@@ -171,6 +175,8 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
                     conn.write_all(&buf).await?;
                 }
             }
+
+            conn.flush().await?;
         }
 
         if conn_readable {

@@ -642,6 +642,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpal-test"
+version = "0.1.0"
+dependencies = [
+ "cpal",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2039,6 +2046,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "449811d15fbdf5ceb5c1144416066429cf82316e2ec8ce0c1f6f8a02e7bbcf8c"
+dependencies = [
+ "cfg-if",
+ "fnv",
+ "lazy_static",
+ "memchr",
+ "parking_lot",
+ "thiserror",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2992,6 +3013,7 @@ dependencies = [
  "mfx-dispatch",
  "once_cell",
  "opus",
+ "prometheus",
  "rtp",
  "sdp",
  "serde",

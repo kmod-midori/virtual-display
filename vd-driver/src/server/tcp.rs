@@ -22,6 +22,8 @@ async fn tcp_server() -> Result<()> {
             };
 
             while let Ok(sample) = data_rx.recv().await {
+                sample.record_end_to_end_latency();
+                
                 let data = &sample.data[..];
                 
                 if let Err(e) = socket.write_all(data).await {

@@ -117,7 +117,7 @@ impl Pipeline {
             .IdrInterval = 1;
 
         enc_par.__bindgen_anon_1.mfx.CodecId = ffi::MFX_CODEC_AVC as u32;
-        // enc_par.__bindgen_anon_1.mfx.CodecProfile = ffi::MFX_PROFILE_AVC_BASELINE as u16;
+        enc_par.__bindgen_anon_1.mfx.CodecProfile = ffi::MFX_PROFILE_AVC_BASELINE as u16;
         enc_par
             .__bindgen_anon_1
             .mfx

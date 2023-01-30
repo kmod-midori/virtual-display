@@ -82,14 +82,14 @@ void MonitorClient::SendFrame(const uint8_t* buffer, size_t buffer_len) {
     return;
   }
 
-  //auto guard = m_FrameBufferMutex.Lock();
+  auto guard = m_FrameBufferMutex.Lock();
   // It's fine even if the user-space server crashes, so we don't check for errors.
 
   memcpy(m_FrameBuffer + sizeof(MonitorConfiguration), buffer, buffer_len);
 
-  //if (guard.IsLocked()) {
-  //  guard.Unlock();
-  //}
+  if (guard.IsLocked()) {
+    guard.Unlock();
+  }
 
   SetEvent(m_NewFrameEvent.Get());
 }

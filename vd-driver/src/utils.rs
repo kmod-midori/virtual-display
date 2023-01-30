@@ -13,6 +13,13 @@ impl Sample {
             duration,
         }
     }
+
+    pub fn record_end_to_end_latency(&self) {
+        let end_to_end_latency = &crate::metrics::get_metrics().end_to_end_latency_ms;
+        if let Ok(dur) = self.timestamp.elapsed() {
+            end_to_end_latency.observe(dur.as_secs_f64() * 1000.0);
+        }
+    }
 }
 
 

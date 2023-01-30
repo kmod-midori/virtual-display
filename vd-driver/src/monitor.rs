@@ -1,6 +1,6 @@
 use std::{
     sync::{atomic::AtomicU32, Arc, Mutex},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::Result;
@@ -140,6 +140,10 @@ fn encoding_thread(
 ) -> Result<()> {
     crate::utils::set_thread_characteristics();
 
+    let metrics = crate::metrics::get_metrics();
+    let encoded_frames = metrics.encoded_frames.local();
+    let encoding_latency_ms = metrics.encoding_latency_ms.local();
+
     let mut session: Option<mfx_dispatch::Session> = Some(mfx_dispatch::Session::new()?);
     let mut encoder: Option<mfx_dispatch::Pipeline> = None;
 
@@ -185,15 +189,18 @@ fn encoding_thread(
 
                 crate::utils::bgra2nv12(width, height, &src, Some(dst_stride), buf_y, buf_uv)?;
 
+                let encoding_start = Instant::now();
                 if let Some(data) =
                     encoder.encode_frame(buf_index, receiver_count > last_receiver_count)?
                 {
+                    encoded_frames.inc();
+                    encoding_latency_ms.observe(encoding_start.elapsed().as_secs_f64() * 1000.0);
+
                     tracing::trace!("Sending frame");
 
                     let sample = Sample::new(data, timestamp, sample_duration);
                     data_tx.send(sample).ok();
                 }
-
                 last_receiver_count = receiver_count;
             }
             EncodingCommand::Configure {
@@ -233,6 +240,12 @@ fn encoding_thread(
 
                 tracing::info!("Encoder configured");
             }
+        }
+
+        if encoded_frames.get() > 120 {
+            // Flush metrics to the global registry every 2 seconds
+            encoded_frames.flush();
+            encoding_latency_ms.flush();
         }
     }
 

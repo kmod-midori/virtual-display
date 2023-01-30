@@ -51,6 +51,15 @@ async fn http_server(ctx: HttpServerContext) -> Result<()> {
             }),
         )
         .route(
+            "/metrics",
+            get(|| async {
+                let c = prometheus::gather();
+                prometheus::TextEncoder::new()
+                    .encode_to_string(&c)
+                    .unwrap_or_default()
+            }),
+        )
+        .route(
             "/monitors",
             get(|| async {
                 let monitors = get_app().monitors().keys().cloned().collect::<Vec<_>>();
