@@ -265,9 +265,16 @@ NTSTATUS IddSampleAdapterCommitModes(IDDCX_ADAPTER AdapterObject, const IDARG_IN
   UNREFERENCED_PARAMETER(AdapterObject);
 
   for (UINT i = 0; i < pInArgs->PathCount; i++) {
-    auto& mode = pInArgs->pPaths[i].TargetVideoSignalInfo;
+    auto& path = pInArgs->pPaths[i];
+
+    if ((path.Flags & IDDCX_PATH_FLAGS_ACTIVE) == 0) {
+      // This monitor is inactive, ignore
+      continue;
+    }
+
+    auto& mode = path.TargetVideoSignalInfo;
     auto* pMonitorContextWrapper = WdfObjectGet_IndirectMonitorContextWrapper(pInArgs->pPaths[i].MonitorObject);
-    pMonitorContextWrapper->pContext->Configure(mode);
+    pMonitorContextWrapper->pContext->CommitModes(mode);
   }
 
   return STATUS_SUCCESS;

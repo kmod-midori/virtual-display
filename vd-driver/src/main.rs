@@ -5,19 +5,22 @@ use anyhow::Result;
 use monitor::Monitor;
 use windows::Win32::Media::MediaFoundation::{MFStartup, MFSTARTUP_FULL};
 
-use std::{io::Read, time::{SystemTime, Duration}};
+use std::{
+    io::Read,
+    time::{Duration, SystemTime},
+};
 
 use once_cell::sync::OnceCell;
 
 mod app;
 mod audio;
 mod encoder;
+mod metrics;
 mod monitor;
 mod server;
 mod utils;
 mod variant;
 mod win32;
-mod metrics;
 
 use app::ApplicationHandle;
 
@@ -139,6 +142,30 @@ pub fn main() -> Result<()> {
         false,
     )?;
 
+    let cursor_buffer_mutex = win32::Mutex::new("Global\\VdMonitor0CursorMutex", Some(&descriptor))?;
+
+    let cursor_position_event = win32::Event::new(
+        "Global\\VdMonitor0CursorPositionUpdatedEvent",
+        Some(&descriptor),
+        false,
+        false,
+    )?;
+
+    let cursor_image_event = win32::Event::new(
+        "Global\\VdMonitor0CursorImageUpdatedEvent",
+        Some(&descriptor),
+        false,
+        false,
+    )?;
+
+    let (cursor_mapping, _) = unsafe {
+        win32::FileMapping::new(
+            "Global\\VdMonitor0Cursor",
+            Some(&descriptor),
+            1024 * 128 + 4 * 6,
+        )?
+    };
+
     let (mut frame_buffer_mapping, map_already_exists) = unsafe {
         win32::FileMapping::new("Global\\VdMonitor0FB", Some(&descriptor), 1024 * 1024 * 20)?
     };
@@ -173,7 +200,7 @@ pub fn main() -> Result<()> {
         initial_configuration.2,
     );
 
-    let task = async move {
+    tokio::spawn(async move {
         let _ = new_frame_event.wait(None); // Sync with the first available frame
 
         let mut ticker = tokio::time::interval(Duration::from_millis(16));
@@ -189,27 +216,30 @@ pub fn main() -> Result<()> {
 
             let _ = ticker.tick().await;
         }
-    };
+    });
 
-    // loop {
-    //     let w = win32::wait_multiple(&[&new_frame_event, &configure_event], None)?;
+    loop {
+        let w = win32::wait_multiple(&[&cursor_image_event, &cursor_position_event], None)?;
 
-    //     match w {
-    //         win32::WaitState::Signaled(0) | win32::WaitState::Abandoned(0) => {
-    //             // let _guard = frame_buffer_mutex.lock()?;
-    //             monitor.send_frame(
-    //                 &frame_buffer_mapping.buf()[..1920 * 1080 * 4],
-    //                 SystemTime::now(),
-    //             );
-    //         }
-    //         win32::WaitState::Signaled(1) | win32::WaitState::Abandoned(1) => {
-    //             tracing::info!("Configure");
-    //         }
-    //         _ => unreachable!(),
-    //     }
-    // }
+        match w {
+            win32::WaitState::Signaled(0) | win32::WaitState::Abandoned(0) => {
+                tracing::info!("Cursor image updated");
+                let _guard = cursor_buffer_mutex.lock()?;
 
-    get_tokio_runtime().block_on(task);
+                let width = i32::from_ne_bytes(cursor_mapping.buf()[12..16].try_into().unwrap());
+                let height = i32::from_ne_bytes(cursor_mapping.buf()[16..20].try_into().unwrap());
+                let pitch = i32::from_ne_bytes(cursor_mapping.buf()[20..24].try_into().unwrap());
+                dbg!(width, height, pitch);
+            }
+            win32::WaitState::Signaled(1) | win32::WaitState::Abandoned(1) => {
+                let x = i32::from_ne_bytes(cursor_mapping.buf()[0..4].try_into().unwrap());
+                let y = i32::from_ne_bytes(cursor_mapping.buf()[4..8].try_into().unwrap());
+                let visible = i32::from_ne_bytes(cursor_mapping.buf()[8..12].try_into().unwrap()) == 1;
+                tracing::info!("Cursor position updated ({}, {}) {}", x, y, visible);
+            }
+            _ => unreachable!(),
+        }
+    }
 
     Ok(())
 }

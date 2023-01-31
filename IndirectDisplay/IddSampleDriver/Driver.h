@@ -17,18 +17,9 @@
 
 #include "Trace.h"
 
-//extern "C" {
-//  typedef struct vd_monitor_t vd_monitor_t;
-//
-//  void vd_init();
-//  void vd_log(const char* msg);
-//  void vd_log_debug(const char* msg);
-//
-//  vd_monitor_t* vd_monitor_new(uint32_t index);
-//  void vd_monitor_free(vd_monitor_t* monitor);
-//  void vd_monitor_send_frame(vd_monitor_t* monitor, const uint8_t* buffer, size_t len);
-//  void vd_monitor_configure(vd_monitor_t* monitor, uint32_t width, uint32_t height, uint32_t framerate);
-//}
+#define CURSOR_BUFFER_SIZE (1024 * 128)
+#define CURSOR_MAX_WIDTH 32
+#define CURSOR_MAX_HEIGHT 32
 
 namespace Microsoft {
   namespace WRL {
@@ -80,16 +71,24 @@ namespace Microsoft {
       MonitorClient(UINT ConnectorIndex);
       ~MonitorClient();
 
-      void Configure(uint32_t width, uint32_t height, uint32_t framerate);
+      void CommitModes(uint32_t width, uint32_t height, uint32_t framerate);
       void SendFrame(const uint8_t* buffer, size_t buffer_len);
+
+      void UpdateCursorPosition(int32_t x, int32_t y, bool visible);
+      void UpdateCursorImage(uint32_t width, uint32_t height, const uint8_t* buffer, uint32_t pitch);
 
     private:
       Microsoft::WRL::Wrappers::Mutex m_FrameBufferMutex;
       Microsoft::WRL::Wrappers::Event m_NewFrameEvent;
       Microsoft::WRL::Wrappers::Event m_ConfigureEvent;
+      Microsoft::WRL::Wrappers::Mutex m_CursorBufferMutex;
+      Microsoft::WRL::Wrappers::Event m_CursorPositionUpdatedEvent;
+      Microsoft::WRL::Wrappers::Event m_CursorImageUpdatedEvent;
 
       uint8_t* m_FrameBuffer = nullptr;
       HANDLE m_FrameBufferMapping = nullptr;
+      uint8_t* m_CursorBuffer = nullptr;
+      HANDLE m_CursorFileMapping = nullptr;
     };
 
     /// <summary>
@@ -147,12 +146,20 @@ namespace Microsoft {
       void AssignSwapChain(IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent);
       void UnassignSwapChain();
 
-      void Configure(DISPLAYCONFIG_VIDEO_SIGNAL_INFO& mode);
+      void CommitModes(DISPLAYCONFIG_VIDEO_SIGNAL_INFO& mode);
+
+      void CursorThread();
 
     private:
       IDDCX_MONITOR m_Monitor;
       std::shared_ptr<MonitorClient> m_RustMonitor;
       std::unique_ptr<SwapChainProcessor> m_ProcessingThread;
+      Microsoft::WRL::Wrappers::Thread m_hCursorThread;
+      Microsoft::WRL::Wrappers::Event m_hNewCursorDataAvailableEvent;
+      Microsoft::WRL::Wrappers::Event m_hTerminateCursorThreadEvent;
+
+      DWORD m_CursorShapeId = 0;
+      PBYTE m_CursorBuffer = nullptr;
     };
   }
 }
