@@ -142,7 +142,18 @@ pub fn main() -> Result<()> {
         false,
     )?;
 
-    let cursor_buffer_mutex = win32::Mutex::new("Global\\VdMonitor0CursorMutex", Some(&descriptor))?;
+    let (mut frame_buffer_mapping, map_already_exists) = unsafe {
+        win32::FileMapping::new("Global\\VdMonitor0FB", Some(&descriptor), 1024 * 1024 * 20)?
+    };
+
+    if !map_already_exists {
+        // We created the map, so we need to initialize it
+        // let _guard = frame_buffer_mutex.lock()?;
+        frame_buffer_mapping.buf_mut()[0..4].copy_from_slice(&[0, 0, 0, 0]);
+    }
+
+    let cursor_buffer_mutex =
+        win32::Mutex::new("Global\\VdMonitor0CursorMutex", Some(&descriptor))?;
 
     let cursor_position_event = win32::Event::new(
         "Global\\VdMonitor0CursorPositionUpdatedEvent",
@@ -165,16 +176,6 @@ pub fn main() -> Result<()> {
             1024 * 128 + 4 * 6,
         )?
     };
-
-    let (mut frame_buffer_mapping, map_already_exists) = unsafe {
-        win32::FileMapping::new("Global\\VdMonitor0FB", Some(&descriptor), 1024 * 1024 * 20)?
-    };
-
-    if !map_already_exists {
-        // We created the map, so we need to initialize it
-        // let _guard = frame_buffer_mutex.lock()?;
-        frame_buffer_mapping.buf_mut()[0..4].copy_from_slice(&[0, 0, 0, 0]);
-    }
 
     tracing::info!("Running");
 
@@ -226,15 +227,19 @@ pub fn main() -> Result<()> {
                 tracing::info!("Cursor image updated");
                 let _guard = cursor_buffer_mutex.lock()?;
 
-                let width = i32::from_ne_bytes(cursor_mapping.buf()[12..16].try_into().unwrap());
-                let height = i32::from_ne_bytes(cursor_mapping.buf()[16..20].try_into().unwrap());
-                let pitch = i32::from_ne_bytes(cursor_mapping.buf()[20..24].try_into().unwrap());
+                let buf = cursor_mapping.buf();
+                let width = u32::from_ne_bytes(buf[12..16].try_into().unwrap());
+                let height = u32::from_ne_bytes(buf[16..20].try_into().unwrap());
+                let pitch = u32::from_ne_bytes(buf[20..24].try_into().unwrap());
+
                 dbg!(width, height, pitch);
             }
             win32::WaitState::Signaled(1) | win32::WaitState::Abandoned(1) => {
-                let x = i32::from_ne_bytes(cursor_mapping.buf()[0..4].try_into().unwrap());
-                let y = i32::from_ne_bytes(cursor_mapping.buf()[4..8].try_into().unwrap());
-                let visible = i32::from_ne_bytes(cursor_mapping.buf()[8..12].try_into().unwrap()) == 1;
+                let buf = cursor_mapping.buf();
+                // Coordinates might be negative, so we need to use i32
+                let x = i32::from_ne_bytes(buf[0..4].try_into().unwrap());
+                let y = i32::from_ne_bytes(buf[4..8].try_into().unwrap());
+                let visible = u32::from_ne_bytes(buf[8..12].try_into().unwrap()) == 1;
                 tracing::info!("Cursor position updated ({}, {}) {}", x, y, visible);
             }
             _ => unreachable!(),
