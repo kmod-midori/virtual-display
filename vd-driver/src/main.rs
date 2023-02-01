@@ -5,19 +5,22 @@ use anyhow::Result;
 use monitor::Monitor;
 use windows::Win32::Media::MediaFoundation::{MFStartup, MFSTARTUP_FULL};
 
-use std::{io::Read, time::{SystemTime, Duration}};
+use std::{
+    io::Read,
+    time::{Duration, SystemTime, Instant},
+};
 
 use once_cell::sync::OnceCell;
 
 mod app;
 mod audio;
 mod encoder;
+mod metrics;
 mod monitor;
 mod server;
 mod utils;
 mod variant;
 mod win32;
-mod metrics;
 
 use app::ApplicationHandle;
 
@@ -183,7 +186,7 @@ pub fn main() -> Result<()> {
             let guard = frame_buffer_mutex.lock().unwrap();
             monitor.send_frame(
                 &frame_buffer_mapping.buf()[..1920 * 1080 * 4],
-                SystemTime::now(),
+                Instant::now(),
             );
             drop(guard);
 

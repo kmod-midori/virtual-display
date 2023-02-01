@@ -1,18 +1,18 @@
 use std::{
     sync::{atomic::AtomicU32, Arc, Mutex},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use anyhow::Result;
 
 use crossbeam::channel;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::{get_app, utils::Sample};
 
 #[derive(Debug)]
 enum EncodingCommand {
-    NewFrame(SystemTime),
+    NewFrame(Instant),
     Configure {
         width: u32,
         height: u32,
@@ -21,8 +21,14 @@ enum EncodingCommand {
 }
 
 #[derive(Debug, Clone)]
+pub enum CodecData {
+    H264 { sps: Vec<u8>, pps: Vec<u8> },
+}
+
+#[derive(Debug, Clone)]
 pub struct MonitorHandle {
     pub encoded_tx: broadcast::Sender<Sample>,
+    codec_data_rx: watch::Receiver<Option<CodecData>>,
     width: Arc<AtomicU32>,
     height: Arc<AtomicU32>,
     framerate: Arc<AtomicU32>,
@@ -40,11 +46,16 @@ impl MonitorHandle {
     pub fn framerate(&self) -> u32 {
         self.framerate.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    pub fn codec_data(&self) -> watch::Receiver<Option<CodecData>> {
+        self.codec_data_rx.clone()
+    }
 }
 
 pub struct Monitor {
     cmd_tx: channel::Sender<EncodingCommand>,
     bgra_buffer: Arc<Mutex<Vec<u8>>>,
+
     /// Connector index of this monitor.
     index: u32,
 
@@ -57,13 +68,14 @@ impl Monitor {
     pub fn new(index: u32) -> Self {
         let (cmd_tx, cmd_rx) = channel::bounded(1);
         let (data_tx, _) = broadcast::channel(8);
+        let (codec_data_tx, encoder_data_rx) = watch::channel(None);
 
         let bgra_buffer = Arc::new(Mutex::new(Vec::new()));
 
         let b = bgra_buffer.clone();
         let t = data_tx.clone();
         std::thread::spawn(move || {
-            if let Err(e) = encoding_thread(cmd_rx, t, b) {
+            if let Err(e) = encoding_thread(cmd_rx, t, codec_data_tx, b) {
                 tracing::error!(?e, "Encoding thread failed");
             }
         });
@@ -76,6 +88,7 @@ impl Monitor {
             index,
             MonitorHandle {
                 encoded_tx: data_tx,
+                codec_data_rx: encoder_data_rx,
                 width: width.clone(),
                 height: height.clone(),
                 framerate: framerate.clone(),
@@ -116,7 +129,7 @@ impl Monitor {
     ///
     /// This function is non-blocking, and will return immediately after the data has been copied.
     /// The event is lost if the encoding task is busy.
-    pub fn send_frame(&mut self, bgra_buffer: &[u8], timestamp: SystemTime) {
+    pub fn send_frame(&mut self, bgra_buffer: &[u8], timestamp: Instant) {
         let mut monitor_buffer = self.bgra_buffer.lock().unwrap();
         monitor_buffer.clear();
         monitor_buffer.extend_from_slice(bgra_buffer);
@@ -136,6 +149,7 @@ impl Drop for Monitor {
 fn encoding_thread(
     cmd_rx: channel::Receiver<EncodingCommand>,
     data_tx: broadcast::Sender<Sample>,
+    codec_data_tx: watch::Sender<Option<CodecData>>,
     bgra_buffer: Arc<Mutex<Vec<u8>>>,
 ) -> Result<()> {
     crate::utils::set_thread_characteristics();
@@ -230,13 +244,19 @@ fn encoding_thread(
                 };
 
                 tracing::info!(?width, ?height, ?framerate, "Configuring encoder with");
-
-                encoder = Some(mfx_dispatch::Pipeline::new(
+                let e = mfx_dispatch::Pipeline::new(
                     session,
                     width as u16,
                     height as u16,
                     framerate as u16,
-                )?);
+                )?;
+
+                codec_data_tx.send(Some(CodecData::H264 {
+                    sps: e.sps().to_vec(),
+                    pps: e.pps().to_vec(),
+                })).ok();
+
+                encoder = Some(e);
 
                 tracing::info!("Encoder configured");
             }

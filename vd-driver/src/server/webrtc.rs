@@ -44,7 +44,7 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
             match data_rx.recv().await {
                 Ok(sample) => {
                     sample.record_end_to_end_latency();
-                    
+
                     let data = &sample.data[..];
                     let mut h264 = H264Reader::new(std::io::Cursor::new(data));
 
@@ -52,7 +52,8 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
                         let res = vt
                             .write_sample(&webrtc::media::Sample {
                                 data: nal.data.freeze(),
-                                timestamp: sample.timestamp,
+                                // not really used in the stack
+                                // timestamp: sample.timestamp,
                                 duration: sample.duration,
                                 ..Default::default()
                             })
@@ -95,7 +96,8 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
                         let res = at
                             .write_sample(&webrtc::media::Sample {
                                 data: data.into(),
-                                timestamp: sample.timestamp,
+                                // not really used in the stack
+                                // timestamp: sample.timestamp,
                                 duration: sample.duration,
                                 ..Default::default()
                             })

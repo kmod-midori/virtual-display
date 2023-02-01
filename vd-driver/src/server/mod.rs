@@ -1,6 +1,7 @@
 pub mod http;
 pub mod rtsp;
 pub mod tcp;
+pub mod tcp_custom;
 #[cfg(feature = "webrtc")]
 pub mod webrtc;
 
@@ -18,6 +19,7 @@ pub fn start() {
     webrtc::start(sdp_rx);
 
     tcp::start();
+    tcp_custom::start();
 
     rtsp::start();
 }

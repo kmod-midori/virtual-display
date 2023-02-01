@@ -89,6 +89,9 @@ pub struct Pipeline {
     buffer_height: u16,
     _framerate: u16,
 
+    sps: Vec<u8>,
+    pps: Vec<u8>,
+
     surfaces: Vec<(Vec<u8>, ffi::mfxFrameSurface1)>,
 
     encoded_buffer: Vec<u8>,
@@ -250,6 +253,29 @@ impl Pipeline {
         }
 
         let mut active_enc_par: ffi::mfxVideoParam = unsafe { std::mem::zeroed() };
+
+        let mut sps_buffer = vec![0u8; 128];
+        let mut pps_buffer = vec![0u8; 128];
+        let mut coding_option_sps_pps = ffi::mfxExtCodingOptionSPSPPS {
+            Header: ffi::mfxExtBuffer {
+                BufferId: ffi::MFX_EXTBUFF_CODING_OPTION_SPSPPS as u32,
+                BufferSz: std::mem::size_of::<ffi::mfxExtCodingOptionSPSPPS>() as u32,
+            },
+            SPSBuffer: sps_buffer.as_mut_ptr(),
+            PPSBuffer: pps_buffer.as_mut_ptr(),
+            SPSBufSize: sps_buffer.len() as u16,
+            PPSBufSize: pps_buffer.len() as u16,
+            SPSId: 0,
+            PPSId: 0,
+        };
+
+        let ext_params = &mut [
+            &mut coding_option_sps_pps as *mut ffi::mfxExtCodingOptionSPSPPS
+                as *mut ffi::mfxExtBuffer,
+        ];
+        active_enc_par.ExtParam = ext_params.as_mut_ptr();
+        active_enc_par.NumExtParam = ext_params.len() as u16;
+
         unsafe {
             check_error(ffi::MFXVideoENCODE_GetVideoParam(
                 session.raw,
@@ -280,6 +306,9 @@ impl Pipeline {
             buffer_height: buffer_height as u16,
             _framerate: framerate,
 
+            sps: sps_buffer[..coding_option_sps_pps.SPSBufSize as usize].to_vec(),
+            pps: pps_buffer[..coding_option_sps_pps.PPSBufSize as usize].to_vec(),
+
             surfaces,
 
             encoded_buffer,
@@ -304,6 +333,14 @@ impl Pipeline {
 
     pub fn stride(&self) -> usize {
         self.buffer_width as usize
+    }
+
+    pub fn sps(&self) -> &[u8] {
+        &self.sps
+    }
+
+    pub fn pps(&self) -> &[u8] {
+        &self.pps
     }
 
     pub fn encode_frame(

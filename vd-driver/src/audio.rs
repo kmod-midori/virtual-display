@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -56,7 +56,7 @@ pub fn setup_audio() -> Result<broadcast::Sender<Sample>> {
 
             dbg!(data);
 
-            let pts = std::time::SystemTime::now();
+            let pts = Instant::now();
 
             while !data.is_empty() {
                 let to_copy = std::cmp::min(data.len(), packet_size - buffer_filled);

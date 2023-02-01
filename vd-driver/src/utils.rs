@@ -1,12 +1,19 @@
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use dcv_color_primitives as dcp;
+
 #[derive(Debug, Clone)]
 pub struct Sample {
     pub data: Arc<Vec<u8>>,
-    pub timestamp: SystemTime,
+    pub timestamp: Instant,
     pub duration: Duration,
 }
 
 impl Sample {
-    pub fn new(data: impl AsRef<[u8]>, timestamp: SystemTime, duration: Duration) -> Self {
+    pub fn new(data: impl AsRef<[u8]>, timestamp: Instant, duration: Duration) -> Self {
         Self {
             data: Arc::new(data.as_ref().to_vec()),
             timestamp,
@@ -16,12 +23,9 @@ impl Sample {
 
     pub fn record_end_to_end_latency(&self) {
         let end_to_end_latency = &crate::metrics::get_metrics().end_to_end_latency_ms;
-        if let Ok(dur) = self.timestamp.elapsed() {
-            end_to_end_latency.observe(dur.as_secs_f64() * 1000.0);
-        }
+        end_to_end_latency.observe(self.timestamp.elapsed().as_secs_f64() * 1000.0);
     }
 }
-
 
 /// Set the thread characteristics to notify the system that this thread is
 /// a high priority thread.
@@ -39,9 +43,7 @@ pub fn set_thread_characteristics() {
     }
 }
 
-use std::{time::{SystemTime, Duration}, sync::Arc};
 
-use dcv_color_primitives as dcp;
 
 pub fn bgra2nv12(
     width: u32,

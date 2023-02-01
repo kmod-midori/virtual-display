@@ -1,4 +1,4 @@
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use anyhow::Result;
 use axum::http::StatusCode;
@@ -76,7 +76,7 @@ fn find_and_decode_header(headers: &[httparse::Header], name: &str) -> Option<St
 
 async fn handle_conn(conn: TcpStream) -> Result<()> {
     conn.set_nodelay(true).ok();
-    
+
     let mut conn = tokio::io::BufReader::with_capacity(1024 * 10, conn);
 
     let rtsp_finder = memchr::memmem::Finder::new(RTSP_PROTOCOL);
@@ -100,7 +100,7 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
         clock_rate,
     );
 
-    let stream_start = SystemTime::now();
+    let stream_start = Instant::now();
 
     while run {
         let (conn_readable, sample) = match data_rx.as_mut() {
@@ -147,11 +147,8 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
         if let Some(sample) = sample {
             sample.record_end_to_end_latency();
 
-            let timestamp = sample
-                .timestamp
-                .duration_since(stream_start)
-                .map(|d| (d.as_secs_f64() * clock_rate as f64) as u32)
-                .unwrap_or(0);
+            let timestamp =
+                sample.timestamp.duration_since(stream_start).as_secs_f64() * (clock_rate as f64);
 
             let data = &sample.data[..];
             let mut h264 =
@@ -162,7 +159,7 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
                 let packets = packetizer.packetize(&nal.data.freeze(), samples).await?;
 
                 for mut packet in packets {
-                    packet.header.timestamp = timestamp;
+                    packet.header.timestamp = timestamp as u32;
 
                     let len = packet.marshal_size();
                     let len_be = (len as u16).to_be_bytes();
@@ -278,7 +275,9 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
 
                             if let Some(monitor) = get_app().monitors().get(&monitor_id) {
                                 // Force TCP mode
-                                response_lines.push("Transport: RTP/AVP/TCP;unicast;interleaved=0-1".to_string());
+                                response_lines.push(
+                                    "Transport: RTP/AVP/TCP;unicast;interleaved=0-1".to_string(),
+                                );
 
                                 data_tx = Some(monitor.encoded_tx.clone());
                             } else {
@@ -336,7 +335,7 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
                     if !response_body.is_empty() {
                         conn.write_all(&response_body).await?;
                     }
-                    
+
                     conn.flush().await?;
                 }
             }
