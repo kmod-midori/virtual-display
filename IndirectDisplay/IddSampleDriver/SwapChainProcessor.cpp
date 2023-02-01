@@ -95,15 +95,18 @@ void SwapChainProcessor::RunCore() {
       if (WaitResult == WAIT_OBJECT_0 || WaitResult == WAIT_TIMEOUT) {
         // We have a new buffer, so try the AcquireBuffer again
         continue;
-      } else if (WaitResult == WAIT_OBJECT_0 + 1) {
+      }
+      else if (WaitResult == WAIT_OBJECT_0 + 1) {
         // We need to terminate
         break;
-      } else {
+      }
+      else {
         // The wait was cancelled or something unexpected happened
         hr = HRESULT_FROM_WIN32(WaitResult);
         break;
       }
-    } else if (SUCCEEDED(hr)) {
+    }
+    else if (SUCCEEDED(hr)) {
       // We have new frame to process, the surface has a reference on it that the driver has to release
       AcquiredBuffer.Attach(Buffer.MetaData.pSurface);
 
@@ -179,7 +182,8 @@ void SwapChainProcessor::RunCore() {
       // Drivers should report information about sub-frame timings, like encode time, send time, etc.
       // ==============================
       // IddCxSwapChainReportFrameStatistics(m_hSwapChain, ...);
-    } else {
+    }
+    else {
       //ERR("The swap-chain was likely abandoned (e.g. DXGI_ERROR_ACCESS_LOST)");
       break;
     }

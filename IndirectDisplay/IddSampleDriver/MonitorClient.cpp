@@ -18,7 +18,18 @@ struct MonitorConfiguration {
 
 static_assert(sizeof(MonitorConfiguration) == (4 * 4), "Size of MonitorConfiguration is incorrect");
 
-MonitorClient::MonitorClient(UINT ConnectorIndex) : m_FrameBufferMutex(INVALID_HANDLE_VALUE) {
+struct CursorState {
+  int32_t x;
+  int32_t y;
+  uint32_t visible;
+  uint32_t width;
+  uint32_t height;
+  uint32_t pitch;
+};
+
+static_assert(sizeof(CursorState) == (4 * 6), "Size of MonitorConfiguration is incorrect");
+
+MonitorClient::MonitorClient(UINT ConnectorIndex) : m_FrameBufferMutex(INVALID_HANDLE_VALUE), m_CursorBufferMutex(INVALID_HANDLE_VALUE) {
   wchar_t nameBuffer[100] = { 0 };
 
   PSECURITY_DESCRIPTOR securityDescriptor = nullptr;
@@ -60,10 +71,35 @@ MonitorClient::MonitorClient(UINT ConnectorIndex) : m_FrameBufferMutex(INVALID_H
     }
   }
 
+  swprintf_s(nameBuffer, 100, L"Global\\VdMonitor%uCursorMutex", ConnectorIndex);
+  m_CursorBufferMutex = WRL::Wrappers::Mutex(CreateMutexW(&securityAttributes, false, nameBuffer));
+  swprintf_s(nameBuffer, 100, L"Global\\VdMonitor%uCursorPositionUpdatedEvent", ConnectorIndex);
+  m_CursorPositionUpdatedEvent = WRL::Wrappers::Event(CreateEventW(&securityAttributes, false, false, nameBuffer));
+  swprintf_s(nameBuffer, 100, L"Global\\VdMonitor%uCursorImageUpdatedEvent", ConnectorIndex);
+  m_CursorImageUpdatedEvent = WRL::Wrappers::Event(CreateEventW(&securityAttributes, false, false, nameBuffer));
+  swprintf_s(nameBuffer, 100, L"Global\\VdMonitor%uCursor", ConnectorIndex);
+  m_CursorFileMapping = CreateFileMappingW(
+    INVALID_HANDLE_VALUE,
+    &securityAttributes,
+    PAGE_READWRITE,
+    0,
+    CURSOR_BUFFER_SIZE + sizeof(CursorState),
+    nameBuffer
+  );
+  if (m_CursorFileMapping != nullptr) {
+    m_CursorBuffer = static_cast<uint8_t*>(MapViewOfFile(
+      m_CursorFileMapping,
+      FILE_MAP_ALL_ACCESS,
+      0,
+      0,
+      CURSOR_BUFFER_SIZE + sizeof(CursorState)
+    ));
+  }
+
   LocalFree(securityDescriptor);
 }
 
-void MonitorClient::Configure(uint32_t width, uint32_t height, uint32_t framerate) {
+void MonitorClient::CommitModes(uint32_t width, uint32_t height, uint32_t framerate) {
   if (m_FrameBuffer == nullptr) {
     return;
   }
@@ -94,6 +130,36 @@ void MonitorClient::SendFrame(const uint8_t* buffer, size_t buffer_len) {
   SetEvent(m_NewFrameEvent.Get());
 }
 
+void MonitorClient::UpdateCursorPosition(int32_t x, int32_t y, bool visible) {
+  if (m_CursorBuffer == nullptr) {
+    return;
+  }
+  InterlockedExchange((LONG*)m_CursorBuffer, x);
+  InterlockedExchange((LONG*)m_CursorBuffer + 1, y);
+  InterlockedExchange((LONG*)m_CursorBuffer + 2, visible ? 1 : 0);
+  SetEvent(m_CursorPositionUpdatedEvent.Get());
+}
+
+void MonitorClient::UpdateCursorImage(uint32_t width, uint32_t height, const uint8_t* buffer, uint32_t pitch) {
+  if (m_CursorBuffer == nullptr) {
+    return;
+  }
+  auto guard = m_CursorBufferMutex.Lock();
+
+  CursorState* ptr = reinterpret_cast<CursorState*>(m_CursorBuffer);
+
+  ptr->width = width;
+  ptr->height = height;
+  ptr->pitch = pitch;
+
+  memcpy(m_CursorBuffer + sizeof(CursorState), buffer, CURSOR_BUFFER_SIZE);
+
+  if (guard.IsLocked()) {
+    guard.Unlock();
+  }
+  SetEvent(m_CursorImageUpdatedEvent.Get());
+}
+
 MonitorClient::~MonitorClient() {
   if (m_FrameBuffer != nullptr) {
     UnmapViewOfFile(static_cast<LPCVOID>(m_FrameBuffer));
@@ -102,6 +168,16 @@ MonitorClient::~MonitorClient() {
 
   if (m_FrameBufferMapping != nullptr) {
     CloseHandle(m_FrameBufferMapping);
+    m_FrameBufferMapping = nullptr;
+  }
+
+  if (m_CursorBuffer != nullptr) {
+    UnmapViewOfFile(static_cast<LPCVOID>(m_CursorBuffer));
+    m_CursorBuffer = nullptr;
+  }
+
+  if (m_CursorFileMapping != nullptr) {
+    CloseHandle(m_CursorFileMapping);
     m_FrameBufferMapping = nullptr;
   }
 }
