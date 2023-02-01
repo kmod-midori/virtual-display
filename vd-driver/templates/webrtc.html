@@ -4,6 +4,10 @@
 
 {% block head %}
 <style>
+    body {
+        background-color: black;
+    }
+    
     #video-container {
         position: relative;
         width: 100%;
@@ -14,9 +18,14 @@
         justify-content: center;
     }
 
+    #video-overlay {
+        height: 100%;
+        position: relative;
+        overflow: hidden;
+    }
+
     #display-video {
         height: 100%;
-        display: block;
     }
 
     #cursor {
@@ -28,8 +37,10 @@
 
 {% block content %}
 <div id="video-container">
-    <video id="display-video" src="data:," muted></video>
-    <img id="cursor" src="data:," alt="Mouse Cursor" style="display: none;">
+    <div id="video-overlay">
+        <video id="display-video" src="data:," muted></video>
+        <img id="cursor" src="data:," alt="Mouse Cursor" style="display: none;">
+    </div>
 </div>
 
 <script>
@@ -41,8 +52,12 @@
     let cursorVisible = false;
 
     let cursorImageCache = new Map();
-    let cursorImageUrlChanged = false;
+    let cursorImageChanged = false;
+    let cursorScaleX = 1.0;
+    let cursorScaleY = 1.0;
     let cursorImageUrl = null;
+
+    let videoEl = document.getElementById('display-video');
 
     window.createSession = async (monitorId) => {
         let pc = new RTCPeerConnection({})
@@ -53,9 +68,8 @@
         pc.addEventListener('track', function (event) {
             switch (event.track.kind) {
                 case 'video':
-                    let el = document.getElementById('display-video');
-                    el.srcObject = event.streams[0];
-                    el.play();
+                    videoEl.srcObject = event.streams[0];
+                    videoEl.play();
                     break;
                 case 'audio':
                     break;
@@ -76,10 +90,25 @@
             const type = view.getUint8(0);
             switch (type) {
                 case 0:
-                    cursorX = view.getInt32(1);
-                    cursorY = view.getInt32(5);
-                    cursorVisible = view.getUint8(9) === 1;
-                    cursorPosChanged = true;
+                    let videoWidth = videoEl.videoWidth;
+                    let videoHeight = videoEl.videoHeight;
+                    let clientWidth = videoEl.clientWidth;
+                    let clientHeight = videoEl.clientHeight;
+
+                    if (videoWidth > 0 && videoHeight > 0) {
+                        cursorX = (view.getInt32(1) / videoWidth) * clientWidth;
+                        cursorY = (view.getInt32(5) / videoHeight) * clientHeight;
+                        cursorVisible = view.getUint8(9) === 1;
+                        cursorPosChanged = true;
+
+                        let newCursorScaleX = clientWidth / videoWidth;
+                        let newCursorScaleY = clientHeight / videoHeight;
+                        if (newCursorScaleX !== cursorScaleX || newCursorScaleY !== cursorScaleY) {
+                            cursorScaleX = newCursorScaleX;
+                            cursorScaleY = newCursorScaleY;
+                            cursorImageChanged = true;
+                        }
+                    }
                     break;
                 case 1:
                     let crc32 = view.getUint32(1);
@@ -91,14 +120,14 @@
                     let cached = cursorImageCache.get(crc32);
                     if (cached) {
                         cursorImageUrl = cached;
-                        cursorImageUrlChanged = true;
+                        cursorImageChanged = true;
                     } else {
                         let blob = new Blob([new Uint8Array(buffer, 5)], { type: 'image/png' });
                         let urlCreator = window.URL || window.webkitURL;
                         cursorImageUrl = urlCreator.createObjectURL(blob);
                         cursorImageCache.set(crc32, cursorImageUrl);
                     }
-                    cursorImageUrlChanged = true;
+                    cursorImageChanged = true;
                     break;
             }
         });
@@ -140,9 +169,10 @@
             cursorPosChanged = false;
         }
 
-        if (cursorImageUrlChanged) {
+        if (cursorImageChanged) {
             cursorElement.src = cursorImageUrl;
-            cursorImageUrlChanged = false;
+            cursorElement.style.transform = `scale(${cursorScaleX}, ${cursorScaleY})`;
+            cursorImageChanged = false;
         }
 
         window.requestAnimationFrame(refreshCursor);
