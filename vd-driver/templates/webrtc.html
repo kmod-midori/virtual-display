@@ -2,13 +2,48 @@
 
 {% block title %}Viewer{% endblock %}
 
+{% block head %}
+<style>
+    #video-container {
+        position: relative;
+        width: 100%;
+        height: 100vh;
+        margin: 0 auto;
+
+        display: flex;
+        justify-content: center;
+    }
+
+    #display-video {
+        height: 100%;
+        display: block;
+    }
+
+    #cursor {
+        position: absolute;
+    }
+</style>
+{% endblock %}
+
 
 {% block content %}
-<button class="createSessionButton" onclick="window.createSession({{ id }})">Join</button><br />
+<div id="video-container">
+    <video id="display-video" src="data:," muted></video>
+    <img id="cursor" src="data:," alt="Mouse Cursor" style="display: none;">
+</div>
 
-<div id="remoteVideos"></div>
 <script>
     /* eslint-env browser */
+    let monitorId = JSON.parse("{{ id }}");
+    let cursorPosChanged = false;
+    let cursorX = 0;
+    let cursorY = 0;
+    let cursorVisible = false;
+
+    let cursorImageCache = new Map();
+    let cursorImageUrlChanged = false;
+    let cursorImageUrl = null;
+
     window.createSession = async (monitorId) => {
         let pc = new RTCPeerConnection({})
         pc.addEventListener('icecandidate', event => { });
@@ -16,24 +51,56 @@
             console.log(pc.iceConnectionState)
         });
         pc.addEventListener('track', function (event) {
-            var el = document.createElement(event.track.kind)
-            el.srcObject = event.streams[0]
-            el.autoplay = true
-            el.controls = true
-
-            document.getElementById('remoteVideos').appendChild(el)
+            switch (event.track.kind) {
+                case 'video':
+                    let el = document.getElementById('display-video');
+                    el.srcObject = event.streams[0];
+                    el.play();
+                    break;
+                case 'audio':
+                    break;
+            }
         });
-        pc.addEventListener('datachannel', event => {
-            let channel = event.channel;
-            channel.addEventListener('close', () => {
-                console.log('Channel closed');
-            });
-            channel.addEventListener('open', () => {
-                console.log('Channel opened');
-            });
-            channel.addEventListener('message', event => {
-                console.log(`Message received from ${channel.label}: ${event.data}`);
-            });
+
+        let controlChannel = pc.createDataChannel('control', { negotiated: true, id: 0 });
+        controlChannel.binaryType = 'arraybuffer';
+        controlChannel.addEventListener('close', () => {
+            console.log('Channel closed');
+        });
+        controlChannel.addEventListener('open', () => {
+            console.log('Channel opened');
+        });
+        controlChannel.addEventListener('message', event => {
+            const buffer = event.data;
+            const view = new DataView(buffer);
+            const type = view.getUint8(0);
+            switch (type) {
+                case 0:
+                    cursorX = view.getInt32(1);
+                    cursorY = view.getInt32(5);
+                    cursorVisible = view.getUint8(9) === 1;
+                    cursorPosChanged = true;
+                    break;
+                case 1:
+                    let crc32 = view.getUint32(1);
+
+                    if (cursorImageCache.size > 100) {
+                        cursorImageCache.clear();
+                    }
+
+                    let cached = cursorImageCache.get(crc32);
+                    if (cached) {
+                        cursorImageUrl = cached;
+                        cursorImageUrlChanged = true;
+                    } else {
+                        let blob = new Blob([new Uint8Array(buffer, 5)], { type: 'image/png' });
+                        let urlCreator = window.URL || window.webkitURL;
+                        cursorImageUrl = urlCreator.createObjectURL(blob);
+                        cursorImageCache.set(crc32, cursorImageUrl);
+                    }
+                    cursorImageUrlChanged = true;
+                    break;
+            }
         });
 
         pc.addTransceiver('video', { 'direction': 'sendrecv' })
@@ -58,5 +125,30 @@
 
         pc.setRemoteDescription(new RTCSessionDescription(await sdp_response.json()))
     }
+
+    const cursorElement = document.getElementById('cursor');
+
+    function refreshCursor(timestamp) {
+        if (cursorPosChanged) {
+            if (cursorVisible) {
+                cursorElement.style.display = 'block';
+                cursorElement.style.left = cursorX + 'px';
+                cursorElement.style.top = cursorY + 'px';
+            } else {
+                cursorElement.style.display = 'none';
+            }
+            cursorPosChanged = false;
+        }
+
+        if (cursorImageUrlChanged) {
+            cursorElement.src = cursorImageUrl;
+            cursorImageUrlChanged = false;
+        }
+
+        window.requestAnimationFrame(refreshCursor);
+    }
+    window.requestAnimationFrame(refreshCursor);
+
+    createSession(monitorId);
 </script>
 {% endblock %}

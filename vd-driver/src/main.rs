@@ -7,7 +7,8 @@ use windows::Win32::Media::MediaFoundation::{MFStartup, MFSTARTUP_FULL};
 
 use std::{
     io::Read,
-    time::{Duration, Instant, SystemTime}, sync::Arc,
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 use once_cell::sync::OnceCell;
@@ -77,7 +78,7 @@ pub fn main() -> Result<()> {
     dcv_color_primitives::initialize();
 
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
+        .with_env_filter("debug,webrtc_sctp=info,hyper=info,webrtc_mdns::conn=off")
         .init();
 
     metrics::init();
@@ -226,16 +227,23 @@ pub fn main() -> Result<()> {
 
         match w {
             win32::WaitState::Signaled(0) | win32::WaitState::Abandoned(0) => {
-                tracing::info!("Cursor image updated");
+                // tracing::info!("Cursor image updated");
                 let _guard = cursor_buffer_mutex.lock()?;
 
                 let buf = cursor_mapping.buf();
-                
+
                 let width = u32::from_ne_bytes(buf[12..16].try_into().unwrap());
                 let height = u32::from_ne_bytes(buf[16..20].try_into().unwrap());
                 let pitch = u32::from_ne_bytes(buf[20..24].try_into().unwrap());
 
-                dbg!(width, height, pitch);
+                let mut image = Vec::with_capacity((width * height * 4) as usize);
+                for y in 0..height {
+                    let start = 24 + y * pitch;
+                    let end = start + width * 4;
+                    image.extend_from_slice(&buf[start as usize..end as usize]);
+                }
+
+                monitor.set_cursor_image(width, height, image);
             }
             win32::WaitState::Signaled(1) | win32::WaitState::Abandoned(1) => {
                 let buf = cursor_mapping.buf();
@@ -244,7 +252,7 @@ pub fn main() -> Result<()> {
                 let x = i32::from_ne_bytes(buf[0..4].try_into().unwrap());
                 let y = i32::from_ne_bytes(buf[4..8].try_into().unwrap());
                 let visible = u32::from_ne_bytes(buf[8..12].try_into().unwrap()) == 1;
-                
+
                 monitor.set_cursor_position(x, y, visible);
             }
             _ => unreachable!(),

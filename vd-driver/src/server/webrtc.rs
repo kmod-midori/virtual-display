@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use bytes::{BufMut, BytesMut};
 use futures::future::Either;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tracing::Instrument;
 use webrtc::{
     api::media_engine::MediaEngine,
+    data_channel::data_channel_init::RTCDataChannelInit,
     interceptor::registry::Registry,
     media::io::h264_reader::H264Reader,
     peer_connection::{
@@ -224,8 +226,17 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
     }
 
     // Cursor
-    let control_data_channel = peer_connection.create_data_channel("control", None).await?;
+    let control_data_channel = peer_connection
+        .create_data_channel(
+            "control",
+            Some(RTCDataChannelInit {
+                negotiated: Some(0),
+                ..Default::default()
+            }),
+        )
+        .await?;
     let mut cursor_position_rx = monitor.cursor_position();
+    let mut cursor_image_rx = monitor.cursor_image();
     let done_ = done.clone();
     let span_ = span.clone();
     let control_data_channel_ = control_data_channel.clone();
@@ -235,31 +246,58 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
             tracing::info!("Control data channel opened");
         }
 
+        let ch = control_data_channel_.clone();
         Box::pin(
             async move {
                 loop {
                     let done_fut = done_.notified();
                     let cursor_pos_fut = cursor_position_rx.changed();
+                    let cursor_image_fut = cursor_image_rx.changed();
 
                     tokio::select! {
                         _ = done_fut => {
                             break;
                         }
                         _ = cursor_pos_fut => {
-                            let cursor_pos = cursor_position_rx.borrow();
-                            dbg!(cursor_pos);
-                            // let cursor_pos = CursorPosition {
-                            //     x: cursor_pos.x,
-                            //     y: cursor_pos.y,
-                            // };
+                            let cursor_pos = {
+                                let cursor_pos_ref = cursor_position_rx.borrow();
+                                if let Some(p) = cursor_pos_ref.as_ref() {
+                                    *p
+                                } else {
+                                    continue;
+                                }
+                            };
 
-                            // let cursor_pos = serde_json::to_string(&cursor_pos).unwrap();
-                            // let cursor_pos = cursor_pos.as_bytes();
+                            let mut buffer = BytesMut::with_capacity(10);
+                            buffer.put_u8(0);
+                            buffer.put_i32(cursor_pos.x);
+                            buffer.put_i32(cursor_pos.y);
+                            buffer.put_u8(cursor_pos.visible as u8);
 
-                            // if let Err(e) = cursor_data_channel.send(cursor_pos).await {
-                            //     tracing::warn!(?e, "Failed to send cursor position");
-                            //     break;
-                            // }
+                            if let Err(e) = ch.send(&buffer.freeze()).await {
+                                tracing::warn!(?e, "Failed to send cursor position");
+                                break;
+                            }
+                        }
+                        _ = cursor_image_fut => {
+                            let cursor_image = {
+                                let cursor_image_ref = cursor_image_rx.borrow();
+                                if let Some(p) = cursor_image_ref.as_ref() {
+                                    p.clone()
+                                } else {
+                                    continue;
+                                }
+                            };
+
+                            let mut buffer = BytesMut::with_capacity(cursor_image.encoded.len() + 5);
+                            buffer.put_u8(1);
+                            buffer.put_u32(cursor_image.crc32);
+                            buffer.put(cursor_image.encoded);
+
+                            if let Err(e) = ch.send(&buffer.freeze()).await {
+                                tracing::warn!(?e, "Failed to send cursor image");
+                                break;
+                            }
                         }
                     }
                 }
@@ -267,8 +305,6 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
             .instrument(span_),
         )
     }));
-
-    control_data_channel.on_message(Box::new(move |_msg| Box::pin(async {})));
 
     // Set the handler for Peer connection state
     // This will notify you when the peer has connected/disconnected

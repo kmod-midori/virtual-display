@@ -1,11 +1,15 @@
 use std::{
+    num::NonZeroUsize,
     sync::{atomic::AtomicU32, Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use anyhow::Result;
 
+use bytes::Bytes;
 use crossbeam::channel;
+use image::{ImageBuffer, ImageOutputFormat, Rgba};
+use lru::LruCache;
 use tokio::sync::{broadcast, watch};
 
 use crate::{get_app, utils::Sample};
@@ -35,6 +39,7 @@ pub struct MonitorHandle {
     framerate: Arc<AtomicU32>,
 
     cursor_position_rx: watch::Receiver<Option<CursorPosition>>,
+    cursor_image_rx: watch::Receiver<Option<CursorImage>>,
 }
 
 impl MonitorHandle {
@@ -57,6 +62,10 @@ impl MonitorHandle {
     pub fn cursor_position(&self) -> watch::Receiver<Option<CursorPosition>> {
         self.cursor_position_rx.clone()
     }
+
+    pub fn cursor_image(&self) -> watch::Receiver<Option<CursorImage>> {
+        self.cursor_image_rx.clone()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -66,9 +75,28 @@ pub struct CursorPosition {
     pub visible: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct CursorImage {
+    pub crc32: u32,
+    pub raw: ImageBuffer<Rgba<u8>, Bytes>,
+    pub encoded: Bytes,
+}
+
+impl CursorImage {
+    pub fn width(&self) -> u32 {
+        self.raw.width()
+    }
+
+    pub fn height(&self) -> u32 {
+        self.raw.height()
+    }
+}
+
 pub struct Monitor {
     cmd_tx: channel::Sender<EncodingCommand>,
     bgra_buffer: Arc<Mutex<Vec<u8>>>,
+
+    cursor_cache: Mutex<LruCache<u32, CursorImage>>,
 
     /// Connector index of this monitor.
     index: u32,
@@ -78,6 +106,7 @@ pub struct Monitor {
     framerate: Arc<AtomicU32>,
 
     cursor_position_tx: watch::Sender<Option<CursorPosition>>,
+    cursor_image_tx: watch::Sender<Option<CursorImage>>,
 }
 
 impl Monitor {
@@ -86,6 +115,7 @@ impl Monitor {
         let (data_tx, _) = broadcast::channel(8);
         let (codec_data_tx, encoder_data_rx) = watch::channel(None);
         let (cursor_position_tx, cursor_position_rx) = watch::channel(None);
+        let (cursor_image_tx, cursor_image_rx) = watch::channel(None);
         let bgra_buffer = Arc::new(Mutex::new(Vec::new()));
 
         let b = bgra_buffer.clone();
@@ -110,12 +140,15 @@ impl Monitor {
                 framerate: framerate.clone(),
 
                 cursor_position_rx,
+                cursor_image_rx,
             },
         );
 
         Self {
             cmd_tx,
             bgra_buffer,
+
+            cursor_cache: Mutex::new(LruCache::new(NonZeroUsize::new(60).unwrap())),
 
             index,
 
@@ -124,6 +157,7 @@ impl Monitor {
             framerate,
 
             cursor_position_tx,
+            cursor_image_tx,
         }
     }
 
@@ -160,12 +194,40 @@ impl Monitor {
     }
 
     pub fn set_cursor_position(&self, x: i32, y: i32, visible: bool) {
-        self.cursor_position_tx
-            .send(Some(CursorPosition { x, y, visible }))
-            .ok();
+        let pos = CursorPosition { x, y, visible };
+        self.cursor_position_tx.send(Some(pos)).ok();
     }
 
-    pub fn set_cursor_image(&self) {}
+    pub fn set_cursor_image(&self, width: u32, height: u32, image: Vec<u8>) {
+        let data = Bytes::from(image);
+        let checksum = crc32fast::hash(&data);
+
+        let mut cache = self.cursor_cache.lock().unwrap();
+        let cursor_image = if let Some(c) = cache.get(&checksum).cloned() {
+            c
+        } else {
+            let raw = ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, data).unwrap();
+
+            let mut encoded = std::io::Cursor::new(Vec::new());
+            let encoded = match raw.write_to(&mut encoded, ImageOutputFormat::Png) {
+                Ok(_) => Bytes::from(encoded.into_inner()),
+                Err(e) => {
+                    tracing::error!(?e, "Failed to encode cursor image");
+                    return;
+                }
+            };
+
+            let c = CursorImage {
+                crc32: checksum,
+                raw,
+                encoded,
+            };
+            cache.put(checksum, c.clone());
+            c
+        };
+
+        self.cursor_image_tx.send(Some(cursor_image)).ok();
+    }
 }
 
 impl Drop for Monitor {
