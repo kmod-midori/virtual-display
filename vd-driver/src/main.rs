@@ -7,7 +7,7 @@ use windows::Win32::Media::MediaFoundation::{MFStartup, MFSTARTUP_FULL};
 
 use std::{
     io::Read,
-    time::{Duration, SystemTime, Instant},
+    time::{Duration, Instant, SystemTime}, sync::Arc,
 };
 
 use once_cell::sync::OnceCell;
@@ -179,7 +179,7 @@ pub fn main() -> Result<()> {
 
     tracing::info!("Running");
 
-    let mut monitor = Monitor::new(0);
+    let monitor = Arc::new(Monitor::new(0));
 
     let initial_configuration = {
         let _guard = frame_buffer_mutex.lock()?;
@@ -201,6 +201,8 @@ pub fn main() -> Result<()> {
         initial_configuration.2,
     );
 
+    // Send frames to the monitor
+    let monitor_ = monitor.clone();
     tokio::spawn(async move {
         let _ = new_frame_event.wait(None); // Sync with the first available frame
 
@@ -209,7 +211,7 @@ pub fn main() -> Result<()> {
 
         loop {
             let guard = frame_buffer_mutex.lock().unwrap();
-            monitor.send_frame(
+            monitor_.send_frame(
                 &frame_buffer_mapping.buf()[..1920 * 1080 * 4],
                 Instant::now(),
             );
@@ -228,6 +230,7 @@ pub fn main() -> Result<()> {
                 let _guard = cursor_buffer_mutex.lock()?;
 
                 let buf = cursor_mapping.buf();
+                
                 let width = u32::from_ne_bytes(buf[12..16].try_into().unwrap());
                 let height = u32::from_ne_bytes(buf[16..20].try_into().unwrap());
                 let pitch = u32::from_ne_bytes(buf[20..24].try_into().unwrap());
@@ -236,15 +239,15 @@ pub fn main() -> Result<()> {
             }
             win32::WaitState::Signaled(1) | win32::WaitState::Abandoned(1) => {
                 let buf = cursor_mapping.buf();
+
                 // Coordinates might be negative, so we need to use i32
                 let x = i32::from_ne_bytes(buf[0..4].try_into().unwrap());
                 let y = i32::from_ne_bytes(buf[4..8].try_into().unwrap());
                 let visible = u32::from_ne_bytes(buf[8..12].try_into().unwrap()) == 1;
-                tracing::info!("Cursor position updated ({}, {}) {}", x, y, visible);
+                
+                monitor.set_cursor_position(x, y, visible);
             }
             _ => unreachable!(),
         }
     }
-
-    Ok(())
 }

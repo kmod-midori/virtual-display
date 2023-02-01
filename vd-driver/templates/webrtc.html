@@ -23,6 +23,18 @@
 
             document.getElementById('remoteVideos').appendChild(el)
         });
+        pc.addEventListener('datachannel', event => {
+            let channel = event.channel;
+            channel.addEventListener('close', () => {
+                console.log('Channel closed');
+            });
+            channel.addEventListener('open', () => {
+                console.log('Channel opened');
+            });
+            channel.addEventListener('message', event => {
+                console.log(`Message received from ${channel.label}: ${event.data}`);
+            });
+        });
 
         pc.addTransceiver('video', { 'direction': 'sendrecv' })
         pc.addTransceiver('audio', { 'direction': 'sendrecv' })

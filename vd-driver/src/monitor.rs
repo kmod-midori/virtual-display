@@ -29,9 +29,12 @@ pub enum CodecData {
 pub struct MonitorHandle {
     pub encoded_tx: broadcast::Sender<Sample>,
     codec_data_rx: watch::Receiver<Option<CodecData>>,
+
     width: Arc<AtomicU32>,
     height: Arc<AtomicU32>,
     framerate: Arc<AtomicU32>,
+
+    cursor_position_rx: watch::Receiver<Option<CursorPosition>>,
 }
 
 impl MonitorHandle {
@@ -50,6 +53,17 @@ impl MonitorHandle {
     pub fn codec_data(&self) -> watch::Receiver<Option<CodecData>> {
         self.codec_data_rx.clone()
     }
+
+    pub fn cursor_position(&self) -> watch::Receiver<Option<CursorPosition>> {
+        self.cursor_position_rx.clone()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CursorPosition {
+    pub x: i32,
+    pub y: i32,
+    pub visible: bool,
 }
 
 pub struct Monitor {
@@ -62,6 +76,8 @@ pub struct Monitor {
     width: Arc<AtomicU32>,
     height: Arc<AtomicU32>,
     framerate: Arc<AtomicU32>,
+
+    cursor_position_tx: watch::Sender<Option<CursorPosition>>,
 }
 
 impl Monitor {
@@ -69,7 +85,7 @@ impl Monitor {
         let (cmd_tx, cmd_rx) = channel::bounded(1);
         let (data_tx, _) = broadcast::channel(8);
         let (codec_data_tx, encoder_data_rx) = watch::channel(None);
-
+        let (cursor_position_tx, cursor_position_rx) = watch::channel(None);
         let bgra_buffer = Arc::new(Mutex::new(Vec::new()));
 
         let b = bgra_buffer.clone();
@@ -92,6 +108,8 @@ impl Monitor {
                 width: width.clone(),
                 height: height.clone(),
                 framerate: framerate.clone(),
+
+                cursor_position_rx,
             },
         );
 
@@ -104,11 +122,13 @@ impl Monitor {
             width,
             height,
             framerate,
+
+            cursor_position_tx,
         }
     }
 
     /// Configure the monitor with the given parameters.
-    pub fn configure(&mut self, width: u32, height: u32, framerate: u32) {
+    pub fn configure(&self, width: u32, height: u32, framerate: u32) {
         self.cmd_tx
             .send(EncodingCommand::Configure {
                 width,
@@ -129,7 +149,7 @@ impl Monitor {
     ///
     /// This function is non-blocking, and will return immediately after the data has been copied.
     /// The event is lost if the encoding task is busy.
-    pub fn send_frame(&mut self, bgra_buffer: &[u8], timestamp: Instant) {
+    pub fn send_frame(&self, bgra_buffer: &[u8], timestamp: Instant) {
         let mut monitor_buffer = self.bgra_buffer.lock().unwrap();
         monitor_buffer.clear();
         monitor_buffer.extend_from_slice(bgra_buffer);
@@ -138,6 +158,14 @@ impl Monitor {
             .try_send(EncodingCommand::NewFrame(timestamp))
             .ok();
     }
+
+    pub fn set_cursor_position(&self, x: i32, y: i32, visible: bool) {
+        self.cursor_position_tx
+            .send(Some(CursorPosition { x, y, visible }))
+            .ok();
+    }
+
+    pub fn set_cursor_image(&self) {}
 }
 
 impl Drop for Monitor {
@@ -251,10 +279,12 @@ fn encoding_thread(
                     framerate as u16,
                 )?;
 
-                codec_data_tx.send(Some(CodecData::H264 {
-                    sps: e.sps().to_vec(),
-                    pps: e.pps().to_vec(),
-                })).ok();
+                codec_data_tx
+                    .send(Some(CodecData::H264 {
+                        sps: e.sps().to_vec(),
+                        pps: e.pps().to_vec(),
+                    }))
+                    .ok();
 
                 encoder = Some(e);
 
