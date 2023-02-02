@@ -1,0 +1,45 @@
+namespace moe.reimu.virtualdisplay;
+
+union Command {
+    Video, Audio, Timestamp, Configure, CursorPosition, CursorImage
+}
+
+table Packet {
+    command: Command;
+}
+
+table Video {
+    timestamp: uint64;
+}
+
+table Audio {
+    timestamp: uint64;
+}
+
+table Timestamp {
+    timestamp: uint64;
+}
+
+table Configure {
+    width: int;
+    height: int;
+    codec_data: [CodecData];
+}
+
+table CursorPosition {
+    x: int;
+    y: int;
+    visible: bool;
+}
+
+table CursorImage {
+    crc32: uint32;
+    png: [ubyte];
+}
+
+table CodecData {
+    name: string;
+    data: [ubyte];
+}
+
+root_type Packet;
