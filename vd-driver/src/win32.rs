@@ -110,6 +110,7 @@ impl FromStr for SecurityDescriptor {
     }
 }
 
+#[derive(Clone)]
 pub struct Mutex {
     handle: HANDLE,
 }
@@ -170,6 +171,7 @@ impl Drop for MutexGuard<'_> {
     }
 }
 
+#[derive(Clone)]
 pub struct Event {
     handle: HANDLE,
 }
@@ -216,9 +218,12 @@ impl Drop for Event {
     }
 }
 
+#[derive(Clone)]
 pub struct FileMapping {
     handle: HANDLE,
-    buf: &'static mut [u8],
+    ptr: *mut u8,
+    len: usize,
+    // buf: &'static mut [u8],
 }
 
 impl FileMapping {
@@ -254,25 +259,32 @@ impl FileMapping {
 
         let already_exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
 
-        let buf = std::slice::from_raw_parts_mut(buf_ptr as *mut u8, size);
-
-        Ok((Self { handle, buf }, already_exists))
+        Ok((
+            Self {
+                handle,
+                ptr: buf_ptr as *mut u8,
+                len: size,
+            },
+            already_exists,
+        ))
     }
 
     pub fn buf(&self) -> &[u8] {
-        self.buf
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 
     pub fn buf_mut(&mut self) -> &mut [u8] {
-        self.buf
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
 }
 
 impl Drop for FileMapping {
     fn drop(&mut self) {
         unsafe {
-            UnmapViewOfFile(self.buf.as_ptr() as _);
+            UnmapViewOfFile(self.ptr as _);
             CloseHandle(self.handle);
         }
     }
 }
+
+unsafe impl Send for FileMapping {}

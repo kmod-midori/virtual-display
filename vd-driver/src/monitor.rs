@@ -179,6 +179,14 @@ impl Monitor {
             .store(framerate, std::sync::atomic::Ordering::Relaxed);
     }
 
+    pub fn width(&self) -> u32 {
+        self.width.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Notify the monitor that a new frame is available.
     ///
     /// This function is non-blocking, and will return immediately after the data has been copied.

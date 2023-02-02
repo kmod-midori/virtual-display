@@ -204,6 +204,8 @@ pub fn main() -> Result<()> {
 
     // Send frames to the monitor
     let monitor_ = monitor.clone();
+    let fbmutex = frame_buffer_mutex.clone();
+    let fbmap = frame_buffer_mapping.clone();
     tokio::spawn(async move {
         let _ = new_frame_event.wait(None); // Sync with the first available frame
 
@@ -211,11 +213,9 @@ pub fn main() -> Result<()> {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
-            let guard = frame_buffer_mutex.lock().unwrap();
-            monitor_.send_frame(
-                &frame_buffer_mapping.buf()[..1920 * 1080 * 4],
-                Instant::now(),
-            );
+            let guard = fbmutex.lock().unwrap();
+            let buffer_size = monitor_.width() * monitor_.height() * 4;
+            monitor_.send_frame(&fbmap.buf()[..buffer_size as usize], Instant::now());
             drop(guard);
 
             let _ = ticker.tick().await;
@@ -223,7 +223,14 @@ pub fn main() -> Result<()> {
     });
 
     loop {
-        let w = win32::wait_multiple(&[&cursor_image_event, &cursor_position_event], None)?;
+        let w = win32::wait_multiple(
+            &[
+                &cursor_image_event,
+                &cursor_position_event,
+                &configure_event,
+            ],
+            None,
+        )?;
 
         match w {
             win32::WaitState::Signaled(0) | win32::WaitState::Abandoned(0) => {
@@ -254,6 +261,13 @@ pub fn main() -> Result<()> {
                 let visible = u32::from_ne_bytes(buf[8..12].try_into().unwrap()) == 1;
 
                 monitor.set_cursor_position(x, y, visible);
+            }
+            win32::WaitState::Signaled(2) | win32::WaitState::Abandoned(2) => {
+                let configuration = {
+                    let _guard = frame_buffer_mutex.lock()?;
+                    read_configuration(frame_buffer_mapping.buf()).unwrap()
+                };
+                monitor.configure(configuration.0, configuration.1, configuration.2);
             }
             _ => unreachable!(),
         }
