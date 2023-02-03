@@ -2,20 +2,22 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::{BufMut, BytesMut};
-use futures::future::Either;
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot};
 use tracing::Instrument;
 use webrtc::{
     api::media_engine::MediaEngine,
     data_channel::data_channel_init::RTCDataChannelInit,
     interceptor::registry::Registry,
-    media::io::h264_reader::H264Reader,
     peer_connection::{
         peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription,
     },
+    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
     track::track_local::{track_local_static_sample::TrackLocalStaticSample, TrackLocal},
 };
+
+mod audio;
+mod video;
 
 pub struct SdpRequest {
     pub index: u32,
@@ -63,7 +65,7 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
     let done = Arc::new(tokio::sync::Notify::new());
 
     let video_track = Arc::new(TrackLocalStaticSample::new(
-        webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+        RTCRtpCodecCapability {
             mime_type: webrtc::api::media_engine::MIME_TYPE_H264.to_owned(),
             clock_rate: 90000,
             ..Default::default()
@@ -74,53 +76,14 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
 
     // Feed the video track with data from the encoding task.
     let vt = video_track.clone();
-    let mut video_data_rx = monitor.encoded_tx.subscribe();
+    let video_data_rx = monitor.encoded_tx.subscribe();
     let done_ = done.clone();
     tokio::spawn(
         async move {
-            loop {
-                let done_fut = done_.notified();
-                let data_fut = video_data_rx.recv();
-                tokio::pin!(done_fut, data_fut);
-
-                match futures::future::select(done_fut, data_fut).await {
-                    Either::Left(_) => {
-                        break;
-                    }
-                    Either::Right((sample, _)) => match sample {
-                        Ok(sample) => {
-                            sample.record_end_to_end_latency();
-
-                            let data = &sample.data[..];
-                            let mut h264 = H264Reader::new(std::io::Cursor::new(data));
-
-                            while let Ok(nal) = h264.next_nal() {
-                                let res = vt
-                                    .write_sample(&webrtc::media::Sample {
-                                        data: nal.data.freeze(),
-                                        // not really used in the stack
-                                        // timestamp: sample.timestamp,
-                                        duration: sample.duration,
-                                        ..Default::default()
-                                    })
-                                    .await;
-
-                                if let Err(e) = res {
-                                    tracing::warn!(?e, "Failed to write video sample");
-                                    break;
-                                }
-                            }
-                        }
-                        Err(broadcast::error::RecvError::Lagged(_)) => {
-                            // Ignore lagged frames
-                        }
-                        Err(broadcast::error::RecvError::Closed) => {
-                            break;
-                        }
-                    },
-                }
+            tokio::select! {
+                _ = video::video_sender(vt, video_data_rx) => {}
+                _ = done_.notified() => {}
             }
-
             tracing::info!("Video track done");
         }
         .instrument(span.clone()),
@@ -130,9 +93,9 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
         .audio_data_tx
         .as_ref()
         .map(|tx| tx.subscribe());
-    let audio_track = if let Some(mut audio_data_rx) = audio_data_rx {
+    let audio_track = if let Some(audio_data_rx) = audio_data_rx {
         let track = Arc::new(TrackLocalStaticSample::new(
-            webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+            RTCRtpCodecCapability {
                 mime_type: webrtc::api::media_engine::MIME_TYPE_OPUS.to_owned(),
                 ..Default::default()
             },
@@ -145,44 +108,10 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
         let done_ = done.clone();
         tokio::spawn(
             async move {
-                loop {
-                    let done_fut = done_.notified();
-                    let data_fut = audio_data_rx.recv();
-                    tokio::pin!(done_fut, data_fut);
-
-                    match futures::future::select(done_fut, data_fut).await {
-                        Either::Left(_) => {
-                            break;
-                        }
-                        Either::Right((sample, _)) => match sample {
-                            Ok(sample) => {
-                                let data = sample.data.to_vec();
-
-                                let res = at
-                                    .write_sample(&webrtc::media::Sample {
-                                        data: data.into(),
-                                        // not really used in the stack
-                                        // timestamp: sample.timestamp,
-                                        duration: sample.duration,
-                                        ..Default::default()
-                                    })
-                                    .await;
-
-                                if let Err(e) = res {
-                                    tracing::warn!(?e, "Failed to write video sample");
-                                    break;
-                                }
-                            }
-                            Err(broadcast::error::RecvError::Lagged(_)) => {
-                                // Ignore lagged frames
-                            }
-                            Err(broadcast::error::RecvError::Closed) => {
-                                break;
-                            }
-                        },
-                    }
+                tokio::select! {
+                    _ = audio::audio_sender(at, audio_data_rx) => {}
+                    _ = done_.notified() => {}
                 }
-
                 tracing::info!("Audio track done");
             }
             .instrument(span.clone()),
@@ -199,9 +128,6 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
             .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)
             .await?;
 
-        // Read incoming RTCP packets
-        // Before these packets are returned they are processed by interceptors. For things
-        // like NACK this needs to be called.
         tokio::spawn(async move {
             let mut rtcp_buf = vec![0u8; 1500];
             while let Ok((_, _)) = rtp_sender.read(&mut rtcp_buf).await {}
@@ -215,9 +141,6 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
             .add_track(Arc::clone(audio_track) as Arc<dyn TrackLocal + Send + Sync>)
             .await?;
 
-        // Read incoming RTCP packets
-        // Before these packets are returned they are processed by interceptors. For things
-        // like NACK this needs to be called.
         tokio::spawn(async move {
             let mut rtcp_buf = vec![0u8; 1500];
             while let Ok((_, _)) = rtp_sender.read(&mut rtcp_buf).await {}
@@ -235,10 +158,12 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
             }),
         )
         .await?;
+
     let mut cursor_position_rx = monitor.cursor_position();
     let mut cursor_image_rx = monitor.cursor_image();
     let done_ = done.clone();
     let span_ = span.clone();
+    
     let control_data_channel_ = control_data_channel.clone();
     control_data_channel.on_open(Box::new(move || {
         {

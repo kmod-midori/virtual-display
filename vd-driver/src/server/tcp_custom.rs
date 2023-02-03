@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufStream},
     net::TcpStream,
@@ -8,6 +8,8 @@ use tokio::{
 use tracing::Instrument;
 
 use crate::{get_app, monitor::CodecData};
+
+const TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum PacketType {
@@ -36,11 +38,17 @@ impl VdStream {
 
         tracing::trace!("Writing {:?} ({} bytes)", ty, total_len);
 
-        self.inner.write_u32(ty as u32).await?;
-        self.inner.write_u32(total_len as u32).await?;
-        for d in data {
-            self.inner.write_all(d).await?;
-        }
+        let task = async move {
+            self.inner.write_u32(ty as u32).await?;
+            self.inner.write_u32(total_len as u32).await?;
+            for d in data {
+                self.inner.write_all(d).await?;
+            }
+
+            std::io::Result::Ok(())
+        };
+
+        tokio::time::timeout(TIMEOUT, task).await??;
 
         Ok(())
     }
@@ -95,7 +103,7 @@ impl VdStream {
     }
 
     async fn flush(&mut self) -> Result<()> {
-        self.inner.flush().await?;
+        tokio::time::timeout(TIMEOUT, self.inner.flush()).await??;
         Ok(())
     }
 }
