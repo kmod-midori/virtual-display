@@ -1,4 +1,4 @@
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
 
 use anyhow::Result;
 use axum::http::StatusCode;

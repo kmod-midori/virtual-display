@@ -1,8 +1,8 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio::{
-    io::{AsyncWriteExt, BufWriter},
+    io::{AsyncReadExt, AsyncWriteExt, BufStream},
     net::TcpStream,
 };
 use tracing::Instrument;
@@ -13,6 +13,7 @@ use crate::{get_app, monitor::CodecData};
 enum PacketType {
     /// `[i64 ts][data]`
     Video = 0,
+    /// `[i64 ts][data]`
     Audio = 1,
     /// `[i64 ts]`
     Timestamp = 2,
@@ -20,13 +21,13 @@ enum PacketType {
     Configure = 3,
     /// `[i32 x][i32 y][u32 visible]`
     CursorPosition = 4,
-    /// `[data]`
+    /// `[u32 crc32][data]`
     CursorImage = 5,
 }
 
 #[derive(Debug)]
 struct VdStream {
-    inner: BufWriter<TcpStream>,
+    inner: BufStream<TcpStream>,
 }
 
 impl VdStream {
@@ -57,15 +58,19 @@ impl VdStream {
         .await
     }
 
-    async fn write_configure(&mut self, width: u32, height: u32, data: &[&[u8]]) -> Result<()> {
+    async fn write_configure(&mut self, width: u32, height: u32, data: &CodecData) -> Result<()> {
         let mut pkts = vec![
             (width as i32).to_be_bytes().to_vec(),
             (height as i32).to_be_bytes().to_vec(),
         ];
 
-        for d in data {
-            pkts.push((d.len() as u32).to_be_bytes().to_vec());
-            pkts.push(d.to_vec());
+        match data {
+            CodecData::H264 { sps, pps } => {
+                pkts.push((sps.len() as u32).to_be_bytes().to_vec());
+                pkts.push(sps.to_vec());
+                pkts.push((pps.len() as u32).to_be_bytes().to_vec());
+                pkts.push(pps.to_vec());
+            }
         }
 
         let pkts_ref: Vec<&[u8]> = pkts.iter().map(|v| v.as_slice()).collect();
@@ -98,19 +103,20 @@ impl VdStream {
 async fn handle(socket: TcpStream) -> Result<()> {
     socket.set_nodelay(true).ok();
 
-    let socket = tokio::io::BufWriter::with_capacity(1024 * 1024 * 8, socket);
+    let socket = tokio::io::BufStream::with_capacity(1024, 1024 * 1024 * 8, socket);
+    let mut stream = VdStream { inner: socket };
 
-    let monitor = if let Some(monitor) = get_app().monitors().get(&0) {
+    let monitor_id = stream.inner.read_u32().await?;
+    let monitor = if let Some(monitor) = get_app().monitors().get(&monitor_id) {
         monitor.clone()
     } else {
-        anyhow::bail!("Monitor 0 not found");
+        anyhow::bail!("Monitor {} not found", monitor_id);
     };
+
     let mut video_data_rx = monitor.encoded_tx.subscribe();
-    let mut encoder_data_rx = monitor.codec_data();
+    let mut codec_data_rx = monitor.codec_data();
     let mut cursor_position_rx = monitor.cursor_position();
     let mut cursor_image_rx = monitor.cursor_image();
-
-    let mut stream = VdStream { inner: socket };
 
     // == Timing
 
@@ -123,19 +129,18 @@ async fn handle(socket: TcpStream) -> Result<()> {
         stream.flush().await?;
     }
 
-    // Last time we sent a timestamp packet
-    let mut last_timestamp_written = Instant::now();
+    let mut timestamp_interval = tokio::time::interval(Duration::from_secs(10));
 
     // == Codec configuration
 
     let encoder_data = loop {
         tracing::info!("Waiting for codec data");
 
-        if encoder_data_rx.changed().await.is_err() {
+        if codec_data_rx.changed().await.is_err() {
             anyhow::bail!("Encoder data channel closed");
         }
 
-        let r = encoder_data_rx.borrow();
+        let r = codec_data_rx.borrow();
         if let Some(data) = r.as_ref() {
             break data.clone();
         }
@@ -143,13 +148,9 @@ async fn handle(socket: TcpStream) -> Result<()> {
 
     tracing::info!("Obtained codec data");
 
-    match encoder_data {
-        CodecData::H264 { sps, pps } => {
-            stream
-                .write_configure(monitor.width(), monitor.height(), &[&sps[..], &pps[..]])
-                .await?;
-        }
-    }
+    stream
+        .write_configure(monitor.width(), monitor.height(), &encoder_data)
+        .await?;
 
     // == Frames
 
@@ -179,6 +180,24 @@ async fn handle(socket: TcpStream) -> Result<()> {
 
                 stream.write_cursor_image(cursor_image.crc32, &cursor_image.encoded).await?;
             }
+            _ = codec_data_rx.changed() => {
+                let codec_data = {
+                    let codec_data_ref = codec_data_rx.borrow();
+                    if let Some(p) = codec_data_ref.as_ref() {
+                        p.clone()
+                    } else {
+                        continue;
+                    }
+                };
+
+                stream
+                    .write_configure(monitor.width(), monitor.height(), &codec_data)
+                    .await?;
+            }
+            _ = timestamp_interval.tick() => {
+                let now = stream_start.elapsed().as_millis() as u64;
+                stream.write_timestamp(now).await?;
+            }
             sample = video_data_rx.recv() => {
                 let sample = if let Ok(sample) = sample {
                     sample
@@ -194,14 +213,6 @@ async fn handle(socket: TcpStream) -> Result<()> {
                         &sample.data,
                     )
                     .await?;
-
-                if last_timestamp_written.elapsed() > std::time::Duration::from_secs(10) {
-                    // Send a timestamp packet every 10 seconds, to sync the stream
-                    let now = stream_start.elapsed().as_millis() as u64;
-                    stream.write_timestamp(now).await?;
-
-                    last_timestamp_written = Instant::now();
-                }
             }
         }
         stream.flush().await?;

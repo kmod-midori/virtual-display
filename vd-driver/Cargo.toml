@@ -11,9 +11,9 @@ once_cell = "1.17.0"
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 
-
 anyhow = { version = "1.0.68", features = ["backtrace"] }
 windows = { version = "0.44.0", features = [
+    "implement",
     "Win32_Security_Authorization",
     "Win32_Media_MediaFoundation",
     "Win32_Graphics_Direct3D11",
@@ -27,6 +27,10 @@ windows = { version = "0.44.0", features = [
     "Win32_System_Performance",
     "Win32_System_Threading",
     "Win32_System_Memory",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_UI_Shell_PropertiesSystem"
 ] }
 tokio = { version = "1.24.2", features = ["full"] }
 crossbeam = "0.8.2"
@@ -43,27 +47,32 @@ cpal = "0.14.2"
 # == Transport
 # === Transport - WebRTC
 webrtc = { version = "0.6.0", optional = true }
+
 # === Transport - RTSP
 rtp = "0.6.8"
 webrtc-media = "0.5.0"
 webrtc-util = "0.7.0"
 sdp = "0.5.3"
+httparse = "1.8.0"
 
+# == Web
 axum = { version = "0.6.4", features = ["json"] }
 serde = { version = "1.0.152", features = ["derive"] }
 serde_json = "1.0.91"
 base64 = "0.21.0"
 tower-http = { version = "0.3.5", features = ["cors"] }
-httparse = "1.8.0"
+
+# == Cursor
+image = { version = "0.24.5", default-features = false, features = ["png"] }
+lru = "0.9.0"
+crc32fast = "1.3.2"
+
 futures = "0.3.25"
 memchr = "2.5.0"
 askama = { version = "0.11.1", features = ["serde-json", "with-axum"] }
 askama_axum = "0.2.1"
 prometheus = { version = "0.13.3", default-features = false }
 bytes = "1.4.0"
-image = { version = "0.24.5", default-features = false, features = ["png"] }
-lru = "0.9.0"
-crc32fast = "1.3.2"
 
 [features]
 default = ["webrtc"]

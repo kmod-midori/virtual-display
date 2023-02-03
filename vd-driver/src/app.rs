@@ -1,5 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
+use tokio::sync::broadcast;
+
 use crate::{monitor::MonitorHandle, utils::Sample};
 
 pub struct Application {
@@ -8,7 +10,9 @@ pub struct Application {
 }
 
 impl Application {
-    pub fn new(audio_data_tx: Option<tokio::sync::broadcast::Sender<Sample>>) -> Self {
+    pub fn new(
+        audio_data_tx: Option<broadcast::Sender<Sample>>,
+    ) -> Self {
         Self {
             monitors: std::sync::RwLock::new(HashMap::new()),
             audio_data_tx,
@@ -40,7 +44,7 @@ impl std::fmt::Debug for Application {
 pub struct ApplicationHandle(Arc<Application>);
 
 impl ApplicationHandle {
-    pub fn new(audio_data_tx: Option<tokio::sync::broadcast::Sender<Sample>>) -> Self {
+    pub fn new(audio_data_tx: Option<broadcast::Sender<Sample>>) -> Self {
         Self(Arc::new(Application::new(audio_data_tx)))
     }
 }

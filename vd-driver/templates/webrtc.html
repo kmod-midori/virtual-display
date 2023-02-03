@@ -7,7 +7,7 @@
     body {
         background-color: black;
     }
-    
+
     #video-container {
         position: relative;
         width: 100%;
@@ -32,6 +32,12 @@
         position: absolute;
         transform-origin: 0 0;
     }
+
+    #audio-play-button {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+    }
 </style>
 {% endblock %}
 
@@ -41,8 +47,15 @@
     <div id="video-overlay">
         <video id="display-video" src="data:," muted></video>
         <img id="cursor" src="data:," alt="Mouse Cursor" style="display: none;">
+        <button 
+            id="audio-play-button" class="button button-green"
+            style="display: none;"
+            onclick="startAudio()"
+        >Play Audio</button>
     </div>
 </div>
+
+<audio id="display-audio" src="data:," style="display: none;"></audio>
 
 <script>
     /* eslint-env browser */
@@ -59,6 +72,13 @@
     let cursorImageUrl = null;
 
     let videoEl = document.getElementById('display-video');
+    let audioEl = document.getElementById('display-audio');
+
+    window.startAudio = () => {
+        audioEl.play().then(() => {
+            document.getElementById('audio-play-button').style.display = 'none';
+        });
+    };
 
     window.createSession = async (monitorId) => {
         let pc = new RTCPeerConnection({})
@@ -73,6 +93,10 @@
                     videoEl.play();
                     break;
                 case 'audio':
+                    audioEl.srcObject = event.streams[0];
+                    audioEl.play().catch(() => {
+                        document.getElementById('audio-play-button').style.display = 'block';
+                    });
                     break;
             }
         });

@@ -27,28 +27,9 @@ use app::ApplicationHandle;
 
 use crate::win32::Waitable;
 
-pub static TOKIO_RUNTIME: OnceCell<tokio::runtime::Runtime> = OnceCell::new();
-pub fn get_tokio_runtime() -> &'static tokio::runtime::Runtime {
-    TOKIO_RUNTIME.get().unwrap()
-}
-
 pub static APPLICATION: OnceCell<ApplicationHandle> = OnceCell::new();
 pub fn get_app() -> &'static ApplicationHandle {
     APPLICATION.get().unwrap()
-}
-
-#[no_mangle]
-pub extern "C" fn vd_init() {
-    if let Ok(log_file) = std::fs::File::create("Z:\\vd-driver.log") {
-        tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_max_level(tracing::Level::DEBUG)
-            .with_writer(log_file)
-            .try_init()
-            .ok();
-    }
-
-    tracing::info!("vd_init");
 }
 
 fn read_configuration(buf: &[u8]) -> Option<(u32, u32, u32)> {
@@ -74,31 +55,7 @@ fn read_configuration(buf: &[u8]) -> Option<(u32, u32, u32)> {
     Some((width, height, framerate))
 }
 
-pub fn main() -> Result<()> {
-    dcv_color_primitives::initialize();
-
-    tracing_subscriber::fmt()
-        .with_env_filter("debug,webrtc_sctp=info,hyper=info,webrtc_mdns::conn=off")
-        .init();
-
-    metrics::init();
-
-    // Minimize the latency
-    TOKIO_RUNTIME
-        .set(
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .event_interval(10)
-                .global_queue_interval(10)
-                .on_thread_start(|| {
-                    utils::set_thread_characteristics();
-                })
-                .build()
-                .unwrap(),
-        )
-        .unwrap();
-
-    let _guard = get_tokio_runtime().enter();
+pub async fn entry() -> Result<()> {
     let audio_data_tx = match audio::setup_audio() {
         Ok(tx) => Some(tx),
         Err(e) => {
@@ -110,16 +67,6 @@ pub fn main() -> Result<()> {
     APPLICATION
         .set(ApplicationHandle::new(audio_data_tx))
         .unwrap();
-
-    unsafe {
-        if let Err(e) = MFStartup(
-            windows::Win32::Media::MediaFoundation::MF_SDK_VERSION << 16
-                | windows::Win32::Media::MediaFoundation::MF_API_VERSION,
-            MFSTARTUP_FULL,
-        ) {
-            tracing::error!(?e, "Failed to initialize Media Foundation");
-        }
-    }
 
     server::start();
 
@@ -182,6 +129,27 @@ pub fn main() -> Result<()> {
 
     let monitor = Arc::new(Monitor::new(0));
 
+    // Send frames to the monitor
+    let monitor_ = monitor.clone();
+    let fbmutex = frame_buffer_mutex.clone();
+    let fbmap = frame_buffer_mapping.clone();
+    tokio::spawn(async move {
+        let _ = new_frame_event.wait(None); // Sync with the first available frame
+
+        let mut ticker = tokio::time::interval(Duration::from_millis(16));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            {
+                let _guard = fbmutex.lock().unwrap();
+                let buffer_size = monitor_.width() * monitor_.height() * 4;
+                monitor_.send_frame(&fbmap.buf()[..buffer_size as usize], Instant::now());
+            }
+
+            let _ = ticker.tick().await;
+        }
+    });
+
     let initial_configuration = {
         let _guard = frame_buffer_mutex.lock()?;
         read_configuration(frame_buffer_mapping.buf())
@@ -202,74 +170,97 @@ pub fn main() -> Result<()> {
         initial_configuration.2,
     );
 
-    // Send frames to the monitor
-    let monitor_ = monitor.clone();
-    let fbmutex = frame_buffer_mutex.clone();
-    let fbmap = frame_buffer_mapping.clone();
-    tokio::spawn(async move {
-        let _ = new_frame_event.wait(None); // Sync with the first available frame
+    std::thread::spawn(move || {
+        let func = move || {
+            let w = win32::wait_multiple(
+                &[
+                    &cursor_image_event,
+                    &cursor_position_event,
+                    &configure_event,
+                ],
+                None,
+            )?;
 
-        let mut ticker = tokio::time::interval(Duration::from_millis(16));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            match w {
+                win32::WaitState::Signaled(0) | win32::WaitState::Abandoned(0) => {
+                    let _guard = cursor_buffer_mutex.lock()?;
+
+                    let buf = cursor_mapping.buf();
+
+                    let width = u32::from_ne_bytes(buf[12..16].try_into().unwrap());
+                    let height = u32::from_ne_bytes(buf[16..20].try_into().unwrap());
+                    let pitch = u32::from_ne_bytes(buf[20..24].try_into().unwrap());
+
+                    let mut image = Vec::with_capacity((width * height * 4) as usize);
+                    for y in 0..height {
+                        let start = 24 + y * pitch;
+                        let end = start + width * 4;
+                        image.extend_from_slice(&buf[start as usize..end as usize]);
+                    }
+
+                    monitor.set_cursor_image(width, height, image);
+                }
+                win32::WaitState::Signaled(1) | win32::WaitState::Abandoned(1) => {
+                    let buf = cursor_mapping.buf();
+
+                    // Coordinates might be negative, so we need to use i32
+                    let x = i32::from_ne_bytes(buf[0..4].try_into().unwrap());
+                    let y = i32::from_ne_bytes(buf[4..8].try_into().unwrap());
+                    let visible = u32::from_ne_bytes(buf[8..12].try_into().unwrap()) == 1;
+
+                    monitor.set_cursor_position(x, y, visible);
+                }
+                win32::WaitState::Signaled(2) | win32::WaitState::Abandoned(2) => {
+                    let configuration = {
+                        let _guard = frame_buffer_mutex.lock()?;
+                        read_configuration(frame_buffer_mapping.buf()).unwrap()
+                    };
+                    monitor.configure(configuration.0, configuration.1, configuration.2);
+                }
+                _ => unreachable!(),
+            }
+
+            anyhow::Result::<(), anyhow::Error>::Ok(())
+        };
 
         loop {
-            let guard = fbmutex.lock().unwrap();
-            let buffer_size = monitor_.width() * monitor_.height() * 4;
-            monitor_.send_frame(&fbmap.buf()[..buffer_size as usize], Instant::now());
-            drop(guard);
-
-            let _ = ticker.tick().await;
+            if let Err(e) = func() {
+                tracing::error!("Error in monitor control thread: {}", e);
+                break;
+            }
         }
     });
 
-    loop {
-        let w = win32::wait_multiple(
-            &[
-                &cursor_image_event,
-                &cursor_position_event,
-                &configure_event,
-            ],
-            None,
-        )?;
+    tokio::signal::ctrl_c().await?;
 
-        match w {
-            win32::WaitState::Signaled(0) | win32::WaitState::Abandoned(0) => {
-                // tracing::info!("Cursor image updated");
-                let _guard = cursor_buffer_mutex.lock()?;
+    Ok(())
+}
 
-                let buf = cursor_mapping.buf();
+pub fn main() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .event_interval(10)
+        .global_queue_interval(10)
+        .on_thread_start(|| {
+            utils::set_thread_characteristics();
+        })
+        .build()?;
 
-                let width = u32::from_ne_bytes(buf[12..16].try_into().unwrap());
-                let height = u32::from_ne_bytes(buf[16..20].try_into().unwrap());
-                let pitch = u32::from_ne_bytes(buf[20..24].try_into().unwrap());
+    dcv_color_primitives::initialize();
+    tracing_subscriber::fmt()
+        .with_env_filter("debug,webrtc_sctp=info,hyper=info,webrtc_mdns::conn=off")
+        .init();
+    metrics::init();
 
-                let mut image = Vec::with_capacity((width * height * 4) as usize);
-                for y in 0..height {
-                    let start = 24 + y * pitch;
-                    let end = start + width * 4;
-                    image.extend_from_slice(&buf[start as usize..end as usize]);
-                }
-
-                monitor.set_cursor_image(width, height, image);
-            }
-            win32::WaitState::Signaled(1) | win32::WaitState::Abandoned(1) => {
-                let buf = cursor_mapping.buf();
-
-                // Coordinates might be negative, so we need to use i32
-                let x = i32::from_ne_bytes(buf[0..4].try_into().unwrap());
-                let y = i32::from_ne_bytes(buf[4..8].try_into().unwrap());
-                let visible = u32::from_ne_bytes(buf[8..12].try_into().unwrap()) == 1;
-
-                monitor.set_cursor_position(x, y, visible);
-            }
-            win32::WaitState::Signaled(2) | win32::WaitState::Abandoned(2) => {
-                let configuration = {
-                    let _guard = frame_buffer_mutex.lock()?;
-                    read_configuration(frame_buffer_mapping.buf()).unwrap()
-                };
-                monitor.configure(configuration.0, configuration.1, configuration.2);
-            }
-            _ => unreachable!(),
+    unsafe {
+        if let Err(e) = MFStartup(
+            windows::Win32::Media::MediaFoundation::MF_SDK_VERSION << 16
+                | windows::Win32::Media::MediaFoundation::MF_API_VERSION,
+            MFSTARTUP_FULL,
+        ) {
+            tracing::error!(?e, "Failed to initialize Media Foundation");
         }
     }
+
+    runtime.block_on(entry())
 }
