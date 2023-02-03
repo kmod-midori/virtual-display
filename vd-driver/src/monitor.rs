@@ -253,10 +253,9 @@ fn encoding_thread(
     crate::utils::set_thread_characteristics();
 
     let metrics = crate::metrics::get_metrics();
-    let encoded_frames = metrics.encoded_frames.local();
-    let encoding_latency_ms = metrics.encoding_latency_ms.local();
+    let encoded_frames_local = metrics.encoded_frames.local();
+    let encoding_latency_ms_local = metrics.encoding_latency_ms.local();
 
-    let mut session: Option<mfx_dispatch::Session> = Some(mfx_dispatch::Session::new()?);
     let mut encoder: Option<mfx_dispatch::Pipeline> = None;
 
     let mut width = 0;
@@ -305,8 +304,9 @@ fn encoding_thread(
                 if let Some(data) =
                     encoder.encode_frame(buf_index, receiver_count > last_receiver_count)?
                 {
-                    encoded_frames.inc();
-                    encoding_latency_ms.observe(encoding_start.elapsed().as_secs_f64() * 1000.0);
+                    encoded_frames_local.inc();
+                    encoding_latency_ms_local
+                        .observe(encoding_start.elapsed().as_secs_f64() * 1000.0);
 
                     tracing::trace!("Sending frame");
 
@@ -334,20 +334,19 @@ fn encoding_thread(
                 }
                 sample_duration = Duration::from_secs_f64(1.0 / framerate as f64);
 
-                let session = match (encoder.take(), session.take()) {
-                    (None, Some(session)) => session,
-                    (Some(encoder), None) => encoder.close(),
-                    (Some(_), Some(_)) => unreachable!(),
-                    (None, None) => unreachable!(),
-                };
-
                 tracing::info!(?width, ?height, ?framerate, "Configuring encoder with");
-                let e = mfx_dispatch::Pipeline::new(
-                    session,
-                    width as u16,
-                    height as u16,
-                    framerate as u16,
-                )?;
+
+                let e = if let Some(encoder) = &mut encoder {
+                    encoder.reset(width as u16, height as u16, framerate as u16)?;
+                    encoder
+                } else {
+                    encoder = Some(mfx_dispatch::Pipeline::new(
+                        width as u16,
+                        height as u16,
+                        framerate as u16,
+                    )?);
+                    encoder.as_mut().unwrap()
+                };
 
                 codec_data_tx
                     .send(Some(CodecData::H264 {
@@ -356,16 +355,14 @@ fn encoding_thread(
                     }))
                     .ok();
 
-                encoder = Some(e);
-
                 tracing::info!("Encoder configured");
             }
         }
 
-        if encoded_frames.get() > 120 {
+        if encoded_frames_local.get() > 120 {
             // Flush metrics to the global registry every 2 seconds
-            encoded_frames.flush();
-            encoding_latency_ms.flush();
+            encoded_frames_local.flush();
+            encoding_latency_ms_local.flush();
         }
     }
 
