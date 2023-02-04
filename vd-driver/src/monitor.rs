@@ -357,13 +357,14 @@ fn encoding_thread(
                 tracing::info!(?width, ?height, ?framerate, "Configuring encoder with");
 
                 let e = if let Some(encoder) = &mut encoder {
-                    encoder.reset(width as u16, height as u16, framerate as u16)?;
+                    encoder.reset(width as u16, height as u16, framerate as u16, 10)?;
                     encoder
                 } else {
                     encoder = Some(mfx_dispatch::Pipeline::new(
                         width as u16,
                         height as u16,
                         framerate as u16,
+                        10,
                     )?);
                     encoder.as_mut().unwrap()
                 };

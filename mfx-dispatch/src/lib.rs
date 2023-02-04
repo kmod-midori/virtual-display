@@ -88,6 +88,7 @@ pub struct Pipeline {
     height: u16,
     buffer_height: u16,
     framerate: u16,
+    quality: u8,
 
     sps: Vec<u8>,
     pps: Vec<u8>,
@@ -101,7 +102,12 @@ pub struct Pipeline {
 unsafe impl Send for Pipeline {}
 
 impl Pipeline {
-    pub fn new(width: u16, height: u16, framerate: u16) -> Result<Self> {
+    /// ## Arguments
+    /// * `width` - Width of the video in pixels
+    /// * `height` - Height of the video in pixels
+    /// * `framerate` - Framerate of the video in frames per second
+    /// * `quality` - Quality of the video, 1-51, 1 being the best
+    pub fn new(width: u16, height: u16, framerate: u16, quality: u8) -> Result<Self> {
         let session = Session::new()?;
 
         let mut this = Self {
@@ -111,6 +117,7 @@ impl Pipeline {
             buffer_width: 0,
             buffer_height: 0,
             framerate,
+            quality,
 
             sps: vec![],
             pps: vec![],
@@ -126,10 +133,13 @@ impl Pipeline {
         Ok(this)
     }
 
-    pub fn reset(&mut self, width: u16, height: u16, framerate: u16) -> Result<()> {
+    /// ## Arguments
+    /// The same as in [`new`].
+    pub fn reset(&mut self, width: u16, height: u16, framerate: u16, quality: u8) -> Result<()> {
         self.width = width;
         self.height = height;
         self.framerate = framerate;
+        self.quality = quality;
 
         self.configure(ConfigureMethod::Reset)?;
 
@@ -175,7 +185,7 @@ impl Pipeline {
             .__bindgen_anon_1
             .__bindgen_anon_1
             .__bindgen_anon_2
-            .ICQQuality = 27;
+            .ICQQuality = self.quality as u16;
 
         enc_par.__bindgen_anon_1.mfx.FrameInfo.FrameRateExtN = self.framerate as u32;
         enc_par.__bindgen_anon_1.mfx.FrameInfo.FrameRateExtD = 1;
@@ -486,7 +496,7 @@ mod test {
     #[test]
     #[ignore]
     fn encode() {
-        let mut pipeline = Pipeline::new(1920, 1080, 60).unwrap();
+        let mut pipeline = Pipeline::new(1920, 1080, 60, 20).unwrap();
 
         std::thread::spawn(move || {
             for i in 0..30 {
