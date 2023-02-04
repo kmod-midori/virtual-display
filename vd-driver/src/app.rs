@@ -1,21 +1,21 @@
 use std::{collections::HashMap, sync::Arc};
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
-use crate::{monitor::MonitorHandle, utils::Sample};
+use crate::{audio::AudioCodecData, monitor::MonitorHandle, utils::Sample};
 
 pub struct Application {
     pub monitors: std::sync::RwLock<HashMap<u32, MonitorHandle>>,
-    pub audio_data_tx: Option<tokio::sync::broadcast::Sender<Sample>>,
+    pub audio_data_tx: broadcast::Sender<Sample>,
+    audio_codec_data_rx: watch::Receiver<Option<AudioCodecData>>,
 }
 
 impl Application {
-    pub fn new(
-        audio_data_tx: Option<broadcast::Sender<Sample>>,
-    ) -> Self {
+    pub fn new(audio_codec_data_rx: watch::Receiver<Option<AudioCodecData>>) -> Self {
         Self {
             monitors: std::sync::RwLock::new(HashMap::new()),
-            audio_data_tx,
+            audio_data_tx: tokio::sync::broadcast::channel(8).0,
+            audio_codec_data_rx
         }
     }
 
@@ -32,6 +32,10 @@ impl Application {
         self.monitors.write().unwrap().remove(&index);
         tracing::info!(?index, "Unregistered monitor");
     }
+
+    pub fn audio_codec_data(&self) -> watch::Receiver<Option<AudioCodecData>> {
+        self.audio_codec_data_rx.clone()
+    }
 }
 
 impl std::fmt::Debug for Application {
@@ -44,8 +48,8 @@ impl std::fmt::Debug for Application {
 pub struct ApplicationHandle(Arc<Application>);
 
 impl ApplicationHandle {
-    pub fn new(audio_data_tx: Option<broadcast::Sender<Sample>>) -> Self {
-        Self(Arc::new(Application::new(audio_data_tx)))
+    pub fn new(audio_codec_data_rx: watch::Receiver<Option<AudioCodecData>>) -> Self {
+        Self(Arc::new(Application::new(audio_codec_data_rx)))
     }
 }
 

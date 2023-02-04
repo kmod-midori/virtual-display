@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "cpal-test",
     "vd-controller",
     "vd-driver",
     "x264-sys",
@@ -9,4 +8,5 @@ members = [
     "mfx-dispatch",
     "opus-sys",
     "opus",
+    "rd-video-codec",
 ]

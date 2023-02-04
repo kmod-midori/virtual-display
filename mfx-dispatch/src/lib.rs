@@ -98,6 +98,8 @@ pub struct Pipeline {
     encoded_bitstream: ffi::mfxBitstream,
 }
 
+unsafe impl Send for Pipeline {}
+
 impl Pipeline {
     pub fn new(width: u16, height: u16, framerate: u16) -> Result<Self> {
         let session = Session::new()?;
@@ -486,13 +488,17 @@ mod test {
     fn encode() {
         let mut pipeline = Pipeline::new(1920, 1080, 60).unwrap();
 
-        for i in 0..30 {
-            let start = std::time::Instant::now();
-            let (buf_idx, buf_y, buf_uv) = pipeline.get_free_surface().unwrap();
-            buf_y.fill(128);
-            buf_uv.fill(128);
-            let _data = pipeline.encode_frame(buf_idx, false).unwrap();
-            println!("frame {} took {:?}", i, start.elapsed());
-        }
+        std::thread::spawn(move || {
+            for i in 0..30 {
+                let start = std::time::Instant::now();
+                let (buf_idx, buf_y, buf_uv) = pipeline.get_free_surface().unwrap();
+                buf_y.fill(128);
+                buf_uv.fill(128);
+                let _data = pipeline.encode_frame(buf_idx, false).unwrap();
+                println!("frame {} took {:?}", i, start.elapsed());
+            }
+        })
+        .join()
+        .unwrap();
     }
 }

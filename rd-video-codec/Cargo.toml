@@ -1,9 +1,12 @@
 [package]
-name = "cpal-test"
+name = "rd-video-codec"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-cpal = "0.14.2"
+crossbeam = "0.8.2"
+thiserror = "1.0.38"
+
+mfx-dispatch-sys = { path = "../mfx-dispatch-sys" }

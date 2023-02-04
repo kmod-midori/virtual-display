@@ -89,38 +89,29 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
         .instrument(span.clone()),
     );
 
-    let audio_data_rx = crate::get_app()
-        .audio_data_tx
-        .as_ref()
-        .map(|tx| tx.subscribe());
-    let audio_track = if let Some(audio_data_rx) = audio_data_rx {
-        let track = Arc::new(TrackLocalStaticSample::new(
-            RTCRtpCodecCapability {
-                mime_type: webrtc::api::media_engine::MIME_TYPE_OPUS.to_owned(),
-                ..Default::default()
-            },
-            "audio".to_owned(),
-            "webrtc-rs".to_owned(),
-        ));
+    let audio_data_rx = crate::get_app().audio_data_tx.subscribe();
+    let audio_track = Arc::new(TrackLocalStaticSample::new(
+        RTCRtpCodecCapability {
+            mime_type: webrtc::api::media_engine::MIME_TYPE_OPUS.to_owned(),
+            ..Default::default()
+        },
+        "audio".to_owned(),
+        "webrtc-rs".to_owned(),
+    ));
 
-        // Feed the audio track with data from the encoding task.
-        let at = track.clone();
-        let done_ = done.clone();
-        tokio::spawn(
-            async move {
-                tokio::select! {
-                    _ = audio::audio_sender(at, audio_data_rx) => {}
-                    _ = done_.notified() => {}
-                }
-                tracing::info!("Audio track done");
+    // Feed the audio track with data from the encoding task.
+    let at = audio_track.clone();
+    let done_ = done.clone();
+    tokio::spawn(
+        async move {
+            tokio::select! {
+                _ = audio::audio_sender(at, audio_data_rx) => {}
+                _ = done_.notified() => {}
             }
-            .instrument(span.clone()),
-        );
-
-        Some(track)
-    } else {
-        None
-    };
+            tracing::info!("Audio track done");
+        }
+        .instrument(span.clone()),
+    );
 
     // Video
     {
@@ -136,9 +127,9 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
     }
 
     // Audio
-    if let Some(audio_track) = &audio_track {
+    {
         let rtp_sender = peer_connection
-            .add_track(Arc::clone(audio_track) as Arc<dyn TrackLocal + Send + Sync>)
+            .add_track(Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>)
             .await?;
 
         tokio::spawn(async move {
@@ -163,7 +154,7 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
     let mut cursor_image_rx = monitor.cursor_image();
     let done_ = done.clone();
     let span_ = span.clone();
-    
+
     let control_data_channel_ = control_data_channel.clone();
     control_data_channel.on_open(Box::new(move || {
         {

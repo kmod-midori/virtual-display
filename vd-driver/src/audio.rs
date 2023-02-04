@@ -1,13 +1,14 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
+use bytes::{BufMut, Bytes, BytesMut};
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Stream,
 };
 use crossbeam::channel;
-use tokio::sync::broadcast;
 
+use tokio::sync::watch;
 use windows::{
     core::PCWSTR,
     Win32::{
@@ -23,6 +24,19 @@ use windows::{
 };
 
 use crate::utils::Sample;
+
+#[derive(Debug, Clone)]
+pub enum AudioCodecData {
+    Opus { ident_header: Bytes },
+}
+
+impl AudioCodecData {
+    pub fn mime(&self) -> &'static str {
+        match self {
+            AudioCodecData::Opus { .. } => "audio/opus",
+        }
+    }
+}
 
 #[windows::core::implement(IMMNotificationClient)]
 struct AudioNotificationClient {
@@ -67,7 +81,9 @@ impl IMMNotificationClient_Impl for AudioNotificationClient {
     }
 }
 
-fn audio_thread(data_tx: broadcast::Sender<Sample>) -> Result<()> {
+fn audio_thread(audio_codec_data_tx: watch::Sender<Option<AudioCodecData>>) -> Result<()> {
+    let data_tx = crate::get_app().audio_data_tx.clone();
+
     let enumerator: IMMDeviceEnumerator = unsafe {
         CoInitializeEx(None, COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE)?;
         CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_INPROC_SERVER)?
@@ -103,7 +119,7 @@ fn audio_thread(data_tx: broadcast::Sender<Sample>) -> Result<()> {
 
         tracing::info!(channel_count, sample_rate, "Using default output config");
 
-        // Target 10ms packet size
+        // Target 20ms packet size
         let packet_size = (sample_rate as usize / 100) * channel_count as usize;
         let packet_duration = Duration::from_millis(10);
 
@@ -119,6 +135,21 @@ fn audio_thread(data_tx: broadcast::Sender<Sample>) -> Result<()> {
             },
             opus::Application::Audio,
         )?;
+
+        let mut header = BytesMut::new();
+        header.put_slice(b"OpusHead");
+        header.put_u8(1); // Version
+        header.put_u8(channel_count as u8); // Channel count
+        header.put_u16(0); // Pre-skip
+        header.put_u32_le(sample_rate); // Sample rate
+        header.put_u16(0); // Gain
+        header.put_u8(0); // Channel mapping family
+
+        audio_codec_data_tx
+            .send(Some(AudioCodecData::Opus {
+                ident_header: header.freeze(),
+            }))
+            .ok();
 
         let mut encoded_buffer = vec![0u8; packet_size * std::mem::size_of::<f32>()];
 
@@ -168,15 +199,12 @@ fn audio_thread(data_tx: broadcast::Sender<Sample>) -> Result<()> {
     Ok(())
 }
 
-pub fn setup_audio() -> Result<broadcast::Sender<Sample>> {
-    let (audio_data_tx, _) = broadcast::channel(8);
-
-    let tx = audio_data_tx.clone();
+pub fn setup_audio(audio_codec_data_tx: watch::Sender<Option<AudioCodecData>>) -> Result<()> {
     std::thread::spawn(move || {
-        if let Err(e) = audio_thread(tx) {
+        if let Err(e) = audio_thread(audio_codec_data_tx) {
             tracing::error!(?e, "Audio thread failed");
         }
     });
 
-    Ok(audio_data_tx)
+    Ok(())
 }

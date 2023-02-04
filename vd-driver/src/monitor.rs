@@ -25,14 +25,22 @@ enum EncodingCommand {
 }
 
 #[derive(Debug, Clone)]
-pub enum CodecData {
-    H264 { sps: Vec<u8>, pps: Vec<u8> },
+pub enum VideoCodecData {
+    H264 { sps: Bytes, pps: Bytes },
+}
+
+impl VideoCodecData {
+    pub fn mime(&self) -> &'static str {
+        match self {
+            VideoCodecData::H264 { .. } => "video/avc",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct MonitorHandle {
     pub encoded_tx: broadcast::Sender<Sample>,
-    codec_data_rx: watch::Receiver<Option<CodecData>>,
+    codec_data_rx: watch::Receiver<Option<VideoCodecData>>,
 
     width: Arc<AtomicU32>,
     height: Arc<AtomicU32>,
@@ -55,7 +63,7 @@ impl MonitorHandle {
         self.framerate.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn codec_data(&self) -> watch::Receiver<Option<CodecData>> {
+    pub fn codec_data(&self) -> watch::Receiver<Option<VideoCodecData>> {
         self.codec_data_rx.clone()
     }
 
@@ -206,7 +214,19 @@ impl Monitor {
         self.cursor_position_tx.send(Some(pos)).ok();
     }
 
-    pub fn set_cursor_image(&self, width: u32, height: u32, image: Vec<u8>) {
+    pub fn set_cursor_image(&self, width: u32, height: u32, mut image: Vec<u8>) {
+        for chunk in image.chunks_exact_mut(4) {
+            let b = chunk[0];
+            let g = chunk[1];
+            let r = chunk[2];
+            let a = chunk[3];
+
+            chunk[0] = r;
+            chunk[1] = g;
+            chunk[2] = b;
+            chunk[3] = a;
+        }
+
         let data = Bytes::from(image);
         let checksum = crc32fast::hash(&data);
 
@@ -247,7 +267,7 @@ impl Drop for Monitor {
 fn encoding_thread(
     cmd_rx: channel::Receiver<EncodingCommand>,
     data_tx: broadcast::Sender<Sample>,
-    codec_data_tx: watch::Sender<Option<CodecData>>,
+    codec_data_tx: watch::Sender<Option<VideoCodecData>>,
     bgra_buffer: Arc<Mutex<Vec<u8>>>,
 ) -> Result<()> {
     crate::utils::set_thread_characteristics();
@@ -349,9 +369,9 @@ fn encoding_thread(
                 };
 
                 codec_data_tx
-                    .send(Some(CodecData::H264 {
-                        sps: e.sps().to_vec(),
-                        pps: e.pps().to_vec(),
+                    .send(Some(VideoCodecData::H264 {
+                        sps: e.sps().to_vec().into(),
+                        pps: e.pps().to_vec().into(),
                     }))
                     .ok();
 

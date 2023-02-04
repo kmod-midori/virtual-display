@@ -665,13 +665,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cpal-test"
-version = "0.1.0"
-dependencies = [
- "cpal",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2224,6 +2217,15 @@ dependencies = [
  "time",
  "x509-parser",
  "yasna",
+]
+
+[[package]]
+name = "rd-video-codec"
+version = "0.1.0"
+dependencies = [
+ "crossbeam",
+ "mfx-dispatch-sys",
+ "thiserror",
 ]
 
 [[package]]

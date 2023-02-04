@@ -1,13 +1,17 @@
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufStream},
     net::TcpStream,
 };
-use tracing::Instrument;
+use tracing::{info_span, Instrument};
 
-use crate::{get_app, monitor::CodecData};
+use crate::{
+    audio::AudioCodecData,
+    get_app,
+    monitor::{MonitorHandle, VideoCodecData},
+};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -21,10 +25,12 @@ enum PacketType {
     Timestamp = 2,
     /// `[i32 width][i32 height][u32 len][data][u32 len][data]...`
     Configure = 3,
+    /// `[u8 channels][i32 sample_rate][u32 len][data][u32 len][data]...`
+    AudioConfigure = 4,
     /// `[i32 x][i32 y][u32 visible]`
-    CursorPosition = 4,
+    CursorPosition = 5,
     /// `[u32 crc32][data]`
-    CursorImage = 5,
+    CursorImage = 6,
 }
 
 #[derive(Debug)]
@@ -66,14 +72,27 @@ impl VdStream {
         .await
     }
 
-    async fn write_configure(&mut self, width: u32, height: u32, data: &CodecData) -> Result<()> {
+    async fn write_audio(&mut self, timestamp: u64, data: &[u8]) -> Result<()> {
+        self.write_packet(
+            PacketType::Audio,
+            &[&(timestamp as i64).to_be_bytes(), data],
+        )
+        .await
+    }
+
+    async fn write_configure(
+        &mut self,
+        width: u32,
+        height: u32,
+        data: &VideoCodecData,
+    ) -> Result<()> {
         let mut pkts = vec![
             (width as i32).to_be_bytes().to_vec(),
             (height as i32).to_be_bytes().to_vec(),
         ];
 
         match data {
-            CodecData::H264 { sps, pps } => {
+            VideoCodecData::H264 { sps, pps } => {
                 pkts.push((sps.len() as u32).to_be_bytes().to_vec());
                 pkts.push(sps.to_vec());
                 pkts.push((pps.len() as u32).to_be_bytes().to_vec());
@@ -83,6 +102,34 @@ impl VdStream {
 
         let pkts_ref: Vec<&[u8]> = pkts.iter().map(|v| v.as_slice()).collect();
         self.write_packet(PacketType::Configure, &pkts_ref).await
+    }
+
+    async fn write_audio_configure(
+        &mut self,
+        channels: u8,
+        sample_rate: u32,
+        data: &AudioCodecData,
+    ) -> Result<()> {
+        let mut pkts = vec![
+            channels.to_be_bytes().to_vec(),
+            (sample_rate as i32).to_be_bytes().to_vec(),
+        ];
+
+        match data {
+            AudioCodecData::Opus { ident_header } => {
+                pkts.push((ident_header.len() as u32).to_be_bytes().to_vec());
+                pkts.push(ident_header.to_vec());
+                pkts.push(8u32.to_be_bytes().to_vec());
+                pkts.push(vec![0, 0, 0, 0, 0, 0, 0, 0]);
+                pkts.push(8u32.to_be_bytes().to_vec());
+                pkts.push(vec![0, 0, 0, 0, 0, 0, 0, 0]);
+            }
+        }
+
+        let pkts_ref: Vec<&[u8]> = pkts.iter().map(|v| v.as_slice()).collect();
+
+        self.write_packet(PacketType::AudioConfigure, &pkts_ref)
+            .await
     }
 
     async fn write_cursor_position(&mut self, x: i32, y: i32, visible: bool) -> Result<()> {
@@ -108,23 +155,11 @@ impl VdStream {
     }
 }
 
-async fn handle(socket: TcpStream) -> Result<()> {
-    socket.set_nodelay(true).ok();
-
-    let socket = tokio::io::BufStream::with_capacity(1024, 1024 * 1024 * 8, socket);
-    let mut stream = VdStream { inner: socket };
-
-    let monitor_id = stream.inner.read_u32().await?;
-    let monitor = if let Some(monitor) = get_app().monitors().get(&monitor_id) {
-        monitor.clone()
-    } else {
-        anyhow::bail!("Monitor {} not found", monitor_id);
-    };
+async fn handle_video(monitor: MonitorHandle, mut stream: VdStream) -> Result<()> {
+    tracing::info!("Starting video handler");
 
     let mut video_data_rx = monitor.encoded_tx.subscribe();
-    let mut codec_data_rx = monitor.codec_data();
-    let mut cursor_position_rx = monitor.cursor_position();
-    let mut cursor_image_rx = monitor.cursor_image();
+    let mut video_codec_data_rx = monitor.codec_data();
 
     // == Timing
 
@@ -139,58 +174,30 @@ async fn handle(socket: TcpStream) -> Result<()> {
 
     let mut timestamp_interval = tokio::time::interval(Duration::from_secs(10));
 
-    // == Codec configuration
-
-    let encoder_data = loop {
+    let video_codec_data = loop {
         tracing::info!("Waiting for codec data");
 
-        if codec_data_rx.changed().await.is_err() {
+        if video_codec_data_rx.changed().await.is_err() {
             anyhow::bail!("Encoder data channel closed");
         }
 
-        let r = codec_data_rx.borrow();
+        let r = video_codec_data_rx.borrow();
         if let Some(data) = r.as_ref() {
             break data.clone();
         }
     };
-
     tracing::info!("Obtained codec data");
-
     stream
-        .write_configure(monitor.width(), monitor.height(), &encoder_data)
+        .write_configure(monitor.width(), monitor.height(), &video_codec_data)
         .await?;
-
-    // == Frames
 
     loop {
         tokio::select! {
-            _ = cursor_position_rx.changed() => {
-                let cursor_pos = {
-                    let cursor_pos_ref = cursor_position_rx.borrow();
-                    if let Some(p) = cursor_pos_ref.as_ref() {
-                        *p
-                    } else {
-                        continue;
-                    }
-                };
+            biased;
 
-                stream.write_cursor_position(cursor_pos.x, cursor_pos.y, cursor_pos.visible).await?;
-            }
-            _ = cursor_image_rx.changed() => {
-                let cursor_image = {
-                    let cursor_image_ref = cursor_image_rx.borrow();
-                    if let Some(p) = cursor_image_ref.as_ref() {
-                        p.clone()
-                    } else {
-                        continue;
-                    }
-                };
-
-                stream.write_cursor_image(cursor_image.crc32, &cursor_image.encoded).await?;
-            }
-            _ = codec_data_rx.changed() => {
+            _ = video_codec_data_rx.changed() => {
                 let codec_data = {
-                    let codec_data_ref = codec_data_rx.borrow();
+                    let codec_data_ref = video_codec_data_rx.borrow();
                     if let Some(p) = codec_data_ref.as_ref() {
                         p.clone()
                     } else {
@@ -224,6 +231,136 @@ async fn handle(socket: TcpStream) -> Result<()> {
             }
         }
         stream.flush().await?;
+    }
+
+    Ok(())
+}
+
+async fn handle_audio(mut stream: VdStream) -> Result<()> {
+    tracing::info!("Starting audio handler");
+
+    let mut audio_data_rx = crate::get_app().audio_data_tx.subscribe();
+    let mut audio_codec_data_rx = crate::get_app().audio_codec_data();
+
+    let audio_codec_data = loop {
+        tracing::info!("Waiting for codec data");
+
+        if audio_codec_data_rx.changed().await.is_err() {
+            anyhow::bail!("Encoder data channel closed");
+        }
+
+        let r = audio_codec_data_rx.borrow();
+        if let Some(data) = r.as_ref() {
+            break data.clone();
+        }
+    };
+    tracing::info!("Obtained codec data");
+    stream
+        .write_audio_configure(2, 48000, &audio_codec_data)
+        .await?;
+
+    let stream_start = Instant::now();
+
+    loop {
+        tokio::select! {
+            biased;
+
+            _ = audio_codec_data_rx.changed() => {
+                let codec_data = {
+                    let codec_data_ref = audio_codec_data_rx.borrow();
+                    if let Some(p) = codec_data_ref.as_ref() {
+                        p.clone()
+                    } else {
+                        continue;
+                    }
+                };
+
+                stream
+                    .write_audio_configure(2, 48000, &codec_data)
+                    .await?;
+            }
+            sample = audio_data_rx.recv() => {
+                let sample = if let Ok(sample) = sample {
+                    sample
+                } else {
+                    break;
+                };
+
+                stream.write_audio(
+                    sample.timestamp.duration_since(stream_start).as_millis() as u64,
+                    &sample.data
+                ).await?;
+            }
+        }
+        stream.flush().await?;
+    }
+
+    Ok(())
+}
+
+async fn handle_control(monitor: MonitorHandle, mut stream: VdStream) -> Result<()> {
+    tracing::info!("Starting control handler");
+
+    let mut cursor_position_rx = monitor.cursor_position();
+    let mut cursor_image_rx = monitor.cursor_image();
+
+    loop {
+        tokio::select! {
+            _ = cursor_position_rx.changed() => {
+                let cursor_pos = {
+                    let cursor_pos_ref = cursor_position_rx.borrow();
+                    if let Some(p) = cursor_pos_ref.as_ref() {
+                        *p
+                    } else {
+                        continue;
+                    }
+                };
+
+                stream.write_cursor_position(cursor_pos.x, cursor_pos.y, cursor_pos.visible).await?;
+            }
+            _ = cursor_image_rx.changed() => {
+                let cursor_image = {
+                    let cursor_image_ref = cursor_image_rx.borrow();
+                    if let Some(p) = cursor_image_ref.as_ref() {
+                        p.clone()
+                    } else {
+                        continue;
+                    }
+                };
+
+                stream.write_cursor_image(cursor_image.crc32, &cursor_image.encoded).await?;
+            }
+        }
+        stream.flush().await?;
+    }
+}
+
+async fn handle(socket: TcpStream) -> Result<()> {
+    socket.set_nodelay(true).ok();
+
+    let socket = tokio::io::BufStream::with_capacity(1024, 1024 * 1024 * 8, socket);
+    let mut stream = VdStream { inner: socket };
+
+    let monitor_id = stream.inner.read_u32().await?;
+    let monitor = if let Some(monitor) = get_app().monitors().get(&monitor_id) {
+        monitor.clone()
+    } else {
+        anyhow::bail!("Monitor {} not found", monitor_id);
+    };
+
+    match stream.inner.read_u32().await? {
+        0 => {
+            handle_video(monitor, stream)
+                .instrument(info_span!("video"))
+                .await?
+        }
+        1 => handle_audio(stream).instrument(info_span!("audio")).await?,
+        2 => {
+            handle_control(monitor, stream)
+                .instrument(info_span!("control"))
+                .await?
+        }
+        _ => anyhow::bail!("Invalid channel type"),
     }
 
     Ok(())

@@ -56,17 +56,15 @@ fn read_configuration(buf: &[u8]) -> Option<(u32, u32, u32)> {
 }
 
 pub async fn entry() -> Result<()> {
-    let audio_data_tx = match audio::setup_audio() {
-        Ok(tx) => Some(tx),
-        Err(e) => {
-            tracing::error!(?e, "Failed to setup audio");
-            None
-        }
-    };
+    let (audio_codec_data_tx, audio_codec_data_rx) = tokio::sync::watch::channel(None);
 
     APPLICATION
-        .set(ApplicationHandle::new(audio_data_tx))
+        .set(ApplicationHandle::new(audio_codec_data_rx))
         .unwrap();
+
+    if let Err(e) = audio::setup_audio(audio_codec_data_tx) {
+        tracing::error!(?e, "Failed to setup audio");
+    };
 
     server::start();
 
