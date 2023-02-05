@@ -9,4 +9,6 @@ members = [
     "opus-sys",
     "opus",
     "rd-video-codec",
+    "nvcodec-sys",
+    "nvcodec",
 ]

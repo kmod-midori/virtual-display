@@ -1862,6 +1862,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvcodec"
+version = "0.1.0"
+dependencies = [
+ "libloading",
+ "nvcodec-sys",
+ "thiserror",
+ "windows 0.44.0",
+]
+
+[[package]]
+name = "nvcodec-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen 0.63.0",
+ "cc",
+ "vcpkg",
+]
+
+[[package]]
 name = "object"
 version = "0.30.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
