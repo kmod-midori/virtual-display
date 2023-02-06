@@ -140,8 +140,12 @@ pub async fn entry() -> Result<()> {
         loop {
             {
                 let _guard = fbmutex.lock().unwrap();
-                let buffer_size = monitor_.width() * monitor_.height() * 4;
-                monitor_.send_frame(&fbmap.buf()[..buffer_size as usize], Instant::now());
+                let config_size = 4 * 4;
+                let buffer_size = (monitor_.width() * monitor_.height() * 4) as usize;
+                monitor_.send_frame(
+                    &fbmap.buf()[config_size..config_size + buffer_size],
+                    Instant::now(),
+                );
             }
 
             let _ = ticker.tick().await;
