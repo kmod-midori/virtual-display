@@ -39,6 +39,7 @@ crossbeam = "0.8.2"
 x264 = { path = "../x264" }
 dcv-color-primitives = "0.5.1"
 mfx-dispatch = { path = "../mfx-dispatch" }
+nvcodec = { path = "../nvcodec" }
 
 # Audio
 opus = { path = "../opus" }

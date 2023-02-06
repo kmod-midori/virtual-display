@@ -4,15 +4,9 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rerun-if-changed=src/wrapper.h");
 
-    let library = vcpkg::find_package("ffnvcodec").unwrap();
-
-    let mut binding_builder = bindgen::Builder::default().header("src/wrapper.h");
-    for include_path in &library.include_paths {
-        binding_builder = binding_builder.clang_arg(format!("-I{}", include_path.display()));
-    }
+    let binding_builder = bindgen::Builder::default().header("src/wrapper.h");
 
     let bindings = binding_builder
-        .blocklist_file("windows.h")
         .derive_debug(true)
         .derive_eq(true)
         .generate()

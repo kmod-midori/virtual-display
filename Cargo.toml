@@ -3,12 +3,12 @@ members = [
     "vd-controller",
     "vd-driver",
     "x264-sys",
-    "hwcodec-test",
     "mfx-dispatch-sys",
     "mfx-dispatch",
     "opus-sys",
     "opus",
     "rd-video-codec",
+    "windows-mft-encode",
     "nvcodec-sys",
     "nvcodec",
 ]

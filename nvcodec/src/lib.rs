@@ -1,11 +1,15 @@
 use std::{ffi::c_void, ptr::null_mut, sync::Arc};
 
-use guid::{Codec, Preset, Profile};
+use buffers::{InputBuffer, LockedInputBuffer, OutputBuffer};
+use config::EncoderInitializeParams;
+use guid::{BufferFormat, Codec, Preset, Profile};
 use nvcodec_sys as ffi;
 use windows::{
     core::{IUnknown, Interface},
     Win32::Graphics::{Direct3D, Direct3D11},
 };
+
+use crate::{config::EncodeConfig, guid::TuningInfo};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -15,6 +19,14 @@ pub enum Error {
     Windows(#[from] windows::core::Error),
     #[error("Device creation failed")]
     DeviceCreationFailed,
+    #[error("NVENC error {0}: {1}")]
+    NvCodec(ffi::NVENCSTATUS, String),
+    #[error("Invalid parameter")]
+    InvalidParam,
+    #[error("Unsupported parameter")]
+    UnsupportedParam,
+    #[error("Not enough buffer, please allocate more input/output buffers")]
+    NotEnoughBuffer,
     #[error("Unknown error: {0}")]
     Unknown(ffi::NVENCSTATUS),
 }
@@ -22,17 +34,24 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub mod adapter;
-pub mod guid;
+pub mod buffers;
 pub mod config;
+pub mod guid;
 
 /// The `NVENCAPI_STRUCT_VERSION` macro.
-pub(crate) fn nvenv_api_struct_version(ver: u32) -> u32 {
+pub(crate) fn nvenc_api_struct_version(ver: u32) -> u32 {
     ffi::NVENCAPI_VERSION | (ver << 16) | (0x7 << 28)
 }
 
 pub(crate) fn check_error(status: ffi::NVENCSTATUS) -> Result<()> {
+    if status == ffi::_NVENCSTATUS_NV_ENC_SUCCESS {
+        return Ok(());
+    }
+
     match status {
         ffi::_NVENCSTATUS_NV_ENC_SUCCESS => Ok(()),
+        ffi::_NVENCSTATUS_NV_ENC_ERR_INVALID_PARAM => Err(Error::InvalidParam),
+        ffi::_NVENCSTATUS_NV_ENC_ERR_UNSUPPORTED_PARAM => Err(Error::UnsupportedParam),
         _ => Err(Error::Unknown(status)),
     }
 }
@@ -65,7 +84,7 @@ impl Library {
         };
 
         let mut fnlist: ffi::NV_ENCODE_API_FUNCTION_LIST = unsafe { std::mem::zeroed() };
-        fnlist.version = nvenv_api_struct_version(1);
+        fnlist.version = nvenc_api_struct_version(1);
         unsafe {
             check_error(create_instance_fn(&mut fnlist))?;
         }
@@ -112,7 +131,7 @@ impl Library {
         let encoder_ptr = unsafe {
             let device = device.cast::<IUnknown>()?;
             let mut params: ffi::NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS = std::mem::zeroed();
-            params.version = nvenv_api_struct_version(1);
+            params.version = nvenc_api_struct_version(1);
             params.deviceType = ffi::_NV_ENC_DEVICE_TYPE_NV_ENC_DEVICE_TYPE_DIRECTX;
             params.device = std::mem::transmute(device);
             params.apiVersion = ffi::NVENCAPI_VERSION;
@@ -135,126 +154,46 @@ impl Library {
 
         Ok(Encoder {
             library: self.clone(),
-            ptr: encoder_ptr,
+            ptr: Some(encoder_ptr),
         })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BufferFormat {
-    // Semi-Planar YUV [Y plane followed by interleaved UV plane]
-    NV12,
-    // Planar YUV [Y plane followed by U and V planes]
-    YV12,
-    // Planar YUV [Y plane followed by V and U planes]
-    IYUV,
-    // Planar YUV [Y plane followed by U and V planes]
-    YUV444,
-    /// 10 bit Semi-Planar YUV [Y plane followed by interleaved UV plane].
-    /// 
-    /// Each pixel of size 2 bytes. Most Significant 10 bits contain pixel data.
-    YUV420P10,
-    /// 10 bit Planar YUV444 [Y plane followed by U and V planes].
-    /// 
-    /// Each pixel of size 2 bytes. Most Significant 10 bits contain pixel data.
-    YUV444P10,
-    /// 8 bit Packed A8R8G8B8. This is a word-ordered format
-    /// where a pixel is represented by a 32-bit word with B
-    /// in the lowest 8 bits, G in the next 8 bits, R in the
-    /// 8 bits after that and A in the highest 8 bits.
-    ARGB,
-    /// 10 bit Packed A2R10G10B10. This is a word-ordered format
-    /// where a pixel is represented by a 32-bit word with B
-    /// in the lowest 10 bits, G in the next 10 bits, R in the
-    /// 10 bits after that and A in the highest 2 bits.
-    ARGB10,
-    /// 8 bit Packed A8Y8U8V8. This is a word-ordered format
-    /// where a pixel is represented by a 32-bit word with V
-    /// in the lowest 8 bits, U in the next 8 bits, Y in the
-    /// 8 bits after that and A in the highest 8 bits.
-    AYUV,
-    /// 8 bit Packed A8B8G8R8. This is a word-ordered format
-    /// where a pixel is represented by a 32-bit word with R
-    /// in the lowest 8 bits, G in the next 8 bits, B in the
-    /// 8 bits after that and A in the highest 8 bits.
-    ABGR,
-    /// 10 bit Packed A2B10G10R10. This is a word-ordered format
-    /// where a pixel is represented by a 32-bit word with R
-    /// in the lowest 10 bits, G in the next 10 bits, B in the
-    /// 10 bits after that and A in the highest 2 bits.
-    ABGR10,
-    /// Buffer format representing one-dimensional buffer.
-    /// This format should be used only when registering the
-    /// resource as output buffer, which will be used to write
-    /// the encoded bit stream or H.264 ME only mode output.
-    U8,
-}
-
-impl BufferFormat {
-    fn from_ffi(format: ffi::NV_ENC_BUFFER_FORMAT) -> Option<Self> {
-        match format {
-            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_NV12 => Some(BufferFormat::NV12),
-            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YV12 => Some(BufferFormat::YV12),
-            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_IYUV => Some(BufferFormat::IYUV),
-            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YUV444 => Some(BufferFormat::YUV444),
-            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YUV420_10BIT => Some(BufferFormat::YUV420P10),
-            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YUV444_10BIT => Some(BufferFormat::YUV444P10),
-            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ARGB => Some(BufferFormat::ARGB),
-            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ARGB10 => Some(BufferFormat::ARGB10),
-            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_AYUV => Some(BufferFormat::AYUV),
-            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ABGR => Some(BufferFormat::ABGR),
-            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ABGR10 => Some(BufferFormat::ABGR10),
-            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_U8 => Some(BufferFormat::U8),
-            _ => None,
-        }
-    }
-}
-
-impl From<BufferFormat> for ffi::NV_ENC_BUFFER_FORMAT {
-    fn from(format: BufferFormat) -> Self {
-        match format {
-            BufferFormat::NV12 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_NV12,
-            BufferFormat::YV12 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YV12,
-            BufferFormat::IYUV => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_IYUV,
-            BufferFormat::YUV444 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YUV444,
-            BufferFormat::YUV420P10 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YUV420_10BIT,
-            BufferFormat::YUV444P10 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YUV444_10BIT,
-            BufferFormat::ARGB => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ARGB,
-            BufferFormat::ARGB10 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ARGB10,
-            BufferFormat::AYUV => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_AYUV,
-            BufferFormat::ABGR => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ABGR,
-            BufferFormat::ABGR10 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ABGR10,
-            BufferFormat::U8 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_U8,
-        }
     }
 }
 
 pub struct Encoder {
     library: Library,
-    ptr: *mut c_void,
+    /// `None` denotes that the encoder has been initialized and moved
+    /// to another struct.
+    ptr: Option<*mut c_void>,
 }
 
 impl Drop for Encoder {
     fn drop(&mut self) {
-        unsafe {
-            self.library.0.fnlist.nvEncDestroyEncoder.unwrap()(self.ptr);
+        if let Some(ptr) = self.ptr {
+            unsafe {
+                self.library.0.fnlist.nvEncDestroyEncoder.unwrap()(ptr);
+            }
         }
     }
 }
 
 impl Encoder {
+    fn ptr(&self) -> *mut c_void {
+        self.ptr.unwrap()
+    }
+
     pub fn codecs(&self) -> Result<Vec<Codec>> {
         let mut count = 0;
         unsafe {
             check_error(self.library.0.fnlist.nvEncGetEncodeGUIDCount.unwrap()(
-                self.ptr, &mut count,
+                self.ptr(),
+                &mut count,
             ))?;
         }
 
         let mut guids = vec![unsafe { std::mem::zeroed() }; count as usize];
         unsafe {
             check_error(self.library.0.fnlist.nvEncGetEncodeGUIDs.unwrap()(
-                self.ptr,
+                self.ptr(),
                 guids.as_mut_ptr(),
                 count,
                 &mut count,
@@ -268,7 +207,7 @@ impl Encoder {
         let mut count = 0;
         unsafe {
             check_error(self.library.0.fnlist.nvEncGetEncodePresetCount.unwrap()(
-                self.ptr,
+                self.ptr(),
                 codec.into(),
                 &mut count,
             ))?;
@@ -277,7 +216,7 @@ impl Encoder {
         let mut guids = vec![unsafe { std::mem::zeroed() }; count as usize];
         unsafe {
             check_error(self.library.0.fnlist.nvEncGetEncodePresetGUIDs.unwrap()(
-                self.ptr,
+                self.ptr(),
                 codec.into(),
                 guids.as_mut_ptr(),
                 count,
@@ -296,13 +235,15 @@ impl Encoder {
                 .0
                 .fnlist
                 .nvEncGetEncodeProfileGUIDCount
-                .unwrap()(self.ptr, codec.into(), &mut count))?;
+                .unwrap()(
+                self.ptr(), codec.into(), &mut count
+            ))?;
         }
 
         let mut guids = vec![unsafe { std::mem::zeroed() }; count as usize];
         unsafe {
             check_error(self.library.0.fnlist.nvEncGetEncodeProfileGUIDs.unwrap()(
-                self.ptr,
+                self.ptr(),
                 codec.into(),
                 guids.as_mut_ptr(),
                 count,
@@ -317,7 +258,7 @@ impl Encoder {
         let mut count = 0;
         unsafe {
             check_error(self.library.0.fnlist.nvEncGetInputFormatCount.unwrap()(
-                self.ptr,
+                self.ptr(),
                 codec.into(),
                 &mut count,
             ))?;
@@ -326,7 +267,7 @@ impl Encoder {
         let mut formats = vec![unsafe { std::mem::zeroed() }; count as usize];
         unsafe {
             check_error(self.library.0.fnlist.nvEncGetInputFormats.unwrap()(
-                self.ptr,
+                self.ptr(),
                 codec.into(),
                 formats.as_mut_ptr(),
                 count,
@@ -334,7 +275,185 @@ impl Encoder {
             ))?;
         }
 
-        Ok(formats.into_iter().filter_map(BufferFormat::from_ffi).collect())
+        Ok(formats
+            .into_iter()
+            .filter_map(BufferFormat::from_ffi)
+            .collect())
+    }
+
+    pub fn preset_config(
+        &self,
+        codec: Codec,
+        preset: Preset,
+        tuning_info: TuningInfo,
+    ) -> Result<EncodeConfig> {
+        let mut config: ffi::NV_ENC_PRESET_CONFIG = unsafe { std::mem::zeroed() };
+        config.version = nvenc_api_struct_version(4) | (1 << 31);
+        config.presetCfg.version = nvenc_api_struct_version(7) | (1 << 31);
+
+        unsafe {
+            check_error(self.library.0.fnlist.nvEncGetEncodePresetConfigEx.unwrap()(
+                self.ptr(),
+                codec.into(),
+                preset.into(),
+                tuning_info.into(),
+                &mut config,
+            ))?;
+        }
+
+        Ok(EncodeConfig {
+            inner: Box::new(config.presetCfg),
+        })
+    }
+
+    pub fn configure(mut self, mut params: EncoderInitializeParams) -> Result<InitializedEncoder> {
+        if let Some(c) = params.encode_config.as_mut() {
+            params.inner.encodeConfig = c.inner.as_mut();
+        }
+
+        let width = params.inner.encodeWidth;
+        let height = params.inner.encodeHeight;
+
+        unsafe {
+            check_error(self.library.0.fnlist.nvEncInitializeEncoder.unwrap()(
+                self.ptr(),
+                params.inner.as_mut(),
+            ))?;
+        }
+
+        let input_buffer = InputBuffer::new(
+            self.library.clone(),
+            self.ptr(),
+            width,
+            height,
+            params.buffer_format,
+        )?;
+
+        let mut output_buffers = vec![];
+        let mut cpu_output_buffers = vec![];
+        for _ in 0..4 {
+            output_buffers.push(OutputBuffer::new(self.library.clone(), self.ptr())?);
+            cpu_output_buffers.push(vec![]);
+        }
+
+        Ok(InitializedEncoder {
+            library: self.library.clone(),
+            ptr: self.ptr.take().unwrap(),
+
+            input_buffer: Some(input_buffer),
+            output_buffers,
+            submitted_output_buffers: vec![],
+            cpu_output_buffers,
+
+            width,
+            height,
+        })
+    }
+}
+
+pub struct InitializedEncoder {
+    library: Library,
+    ptr: *mut c_void,
+
+    input_buffer: Option<InputBuffer>,
+    output_buffers: Vec<OutputBuffer>,
+    submitted_output_buffers: Vec<OutputBuffer>,
+    cpu_output_buffers: Vec<Vec<u8>>,
+
+    width: u32,
+    height: u32,
+}
+
+impl InitializedEncoder {
+    pub fn spspps(&self) -> Result<Vec<u8>> {
+        let mut buffer = [0u8; ffi::NV_MAX_SEQ_HDR_LEN as usize];
+        let mut out_size = 0;
+
+        let mut arg: ffi::NV_ENC_SEQUENCE_PARAM_PAYLOAD = unsafe { std::mem::zeroed() };
+        arg.version = nvenc_api_struct_version(1);
+        arg.inBufferSize = buffer.len() as u32;
+        arg.spsppsBuffer = buffer.as_mut_ptr() as *mut c_void;
+        arg.outSPSPPSPayloadSize = &mut out_size;
+
+        unsafe {
+            check_error(self.library.0.fnlist.nvEncGetSequenceParams.unwrap()(
+                self.ptr, &mut arg,
+            ))?;
+        }
+
+        Ok(buffer[..out_size as usize].to_vec())
+    }
+
+    /// Locks an input buffer for writing
+    pub fn lock_input_buffer(&mut self) -> Result<LockedInputBuffer<'_>> {
+        self.input_buffer.as_mut().unwrap().lock()
+    }
+
+    pub fn encode(&mut self, pts: u64) -> Result<Vec<(u64, &[u8])>> {
+        let input_buffer = self.input_buffer.as_mut().unwrap();
+
+        let mut args: ffi::NV_ENC_PIC_PARAMS = unsafe { std::mem::zeroed() };
+        args.version = nvenc_api_struct_version(4) | (1 << 31);
+        args.inputBuffer = input_buffer.buffer;
+        args.inputWidth = self.width;
+        args.inputHeight = self.height;
+        args.inputPitch = self.width;
+        args.bufferFmt = input_buffer.format().into();
+        args.inputTimeStamp = pts;
+        args.pictureStruct = ffi::_NV_ENC_PIC_STRUCT_NV_ENC_PIC_STRUCT_FRAME;
+
+        let output_buffer = self.output_buffers.pop().ok_or(Error::NotEnoughBuffer)?;
+        args.outputBitstream = output_buffer.buffer;
+        self.submitted_output_buffers.push(output_buffer);
+
+        let result =
+            unsafe { self.library.0.fnlist.nvEncEncodePicture.unwrap()(self.ptr, &mut args) };
+
+        match result {
+            ffi::_NVENCSTATUS_NV_ENC_SUCCESS => {
+                let mut out_buffers = vec![];
+
+                let it = self
+                    .submitted_output_buffers
+                    .drain(..)
+                    .zip(self.cpu_output_buffers.iter_mut());
+
+                for (mut gpu_buffer, cpu_buffer) in it {
+                    let locked = gpu_buffer.lock()?;
+                    cpu_buffer.clear();
+                    cpu_buffer.extend_from_slice(locked.data());
+
+                    out_buffers.push((locked.pts(), cpu_buffer.as_slice()));
+
+                    drop(locked);
+
+                    self.output_buffers.push(gpu_buffer);
+                }
+
+                Ok(out_buffers)
+            }
+            ffi::_NVENCSTATUS_NV_ENC_ERR_NEED_MORE_INPUT => {
+                // This frame has been buffered internally
+                Ok(vec![])
+            }
+            result => {
+                check_error(result)?;
+                unreachable!();
+            }
+        }
+    }
+}
+
+impl Drop for InitializedEncoder {
+    fn drop(&mut self) {
+        // Destroy all buffers before destroying the encoder
+        self.input_buffer.take();
+        self.submitted_output_buffers.clear();
+        self.output_buffers.clear();
+
+        unsafe {
+            check_error(self.library.0.fnlist.nvEncDestroyEncoder.unwrap()(self.ptr)).unwrap();
+        }
     }
 }
 
@@ -347,4 +466,26 @@ fn encoder() {
     dbg!(encoder.presets(Codec::H264).unwrap());
     dbg!(encoder.profiles(Codec::H264).unwrap());
     dbg!(encoder.input_formats(Codec::H264).unwrap());
+
+    let encode_config = encoder
+        .preset_config(Codec::H264, Preset::P4, TuningInfo::LowLatency)
+        .unwrap()
+        .with_rate_control_mode(config::RateControlMode::TargetQuality {
+            quality: Some(10),
+            max: None,
+        });
+
+    let config = EncoderInitializeParams::new(Codec::H264, 1920, 1080, BufferFormat::ARGB)
+        .with_frame_rate(60, 1)
+        .with_preset(Preset::P4)
+        .with_tuning_info(TuningInfo::LowLatency)
+        .with_encode_config(encode_config);
+    let mut encoder = encoder.configure(config).unwrap();
+
+    for _ in 0..30 {
+        let mut b = encoder.lock_input_buffer().unwrap();
+        b.data().fill(128);
+        drop(b);
+        dbg!(encoder.encode(0).unwrap());
+    }
 }

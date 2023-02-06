@@ -287,3 +287,133 @@ impl From<Preset> for ffi::GUID {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TuningInfo {
+    HighQuality,
+    LowLatency,
+    UltraLowLatency,
+    Lossless,
+}
+
+// impl TuningInfo {
+//     pub(crate) fn from_ffi(val: ffi::NV_ENC_TUNING_INFO) -> Option<Self> {
+//         match val {
+//             ffi::NV_ENC_TUNING_INFO_NV_ENC_TUNING_INFO_HIGH_QUALITY => {
+//                 Some(TuningInfo::HighQuality)
+//             }
+//             ffi::NV_ENC_TUNING_INFO_NV_ENC_TUNING_INFO_LOW_LATENCY => Some(TuningInfo::LowLatency),
+//             ffi::NV_ENC_TUNING_INFO_NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY => {
+//                 Some(TuningInfo::UltraLowLatency)
+//             }
+//             ffi::NV_ENC_TUNING_INFO_NV_ENC_TUNING_INFO_LOSSLESS => Some(TuningInfo::Lossless),
+//             _ => None,
+//         }
+//     }
+// }
+
+impl From<TuningInfo> for ffi::NV_ENC_TUNING_INFO {
+    fn from(val: TuningInfo) -> Self {
+        match val {
+            TuningInfo::HighQuality => ffi::NV_ENC_TUNING_INFO_NV_ENC_TUNING_INFO_HIGH_QUALITY,
+            TuningInfo::LowLatency => ffi::NV_ENC_TUNING_INFO_NV_ENC_TUNING_INFO_LOW_LATENCY,
+            TuningInfo::UltraLowLatency => {
+                ffi::NV_ENC_TUNING_INFO_NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY
+            }
+            TuningInfo::Lossless => ffi::NV_ENC_TUNING_INFO_NV_ENC_TUNING_INFO_LOSSLESS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BufferFormat {
+    // Semi-Planar YUV [Y plane followed by interleaved UV plane]
+    NV12,
+    // Planar YUV [Y plane followed by U and V planes]
+    YV12,
+    // Planar YUV [Y plane followed by V and U planes]
+    IYUV,
+    // Planar YUV [Y plane followed by U and V planes]
+    YUV444,
+    /// 10 bit Semi-Planar YUV [Y plane followed by interleaved UV plane].
+    ///
+    /// Each pixel of size 2 bytes. Most Significant 10 bits contain pixel data.
+    YUV420P10,
+    /// 10 bit Planar YUV444 [Y plane followed by U and V planes].
+    ///
+    /// Each pixel of size 2 bytes. Most Significant 10 bits contain pixel data.
+    YUV444P10,
+    /// 8 bit Packed A8R8G8B8. This is a word-ordered format
+    /// where a pixel is represented by a 32-bit word with B
+    /// in the lowest 8 bits, G in the next 8 bits, R in the
+    /// 8 bits after that and A in the highest 8 bits.
+    ARGB,
+    /// 10 bit Packed A2R10G10B10. This is a word-ordered format
+    /// where a pixel is represented by a 32-bit word with B
+    /// in the lowest 10 bits, G in the next 10 bits, R in the
+    /// 10 bits after that and A in the highest 2 bits.
+    ARGB10,
+    /// 8 bit Packed A8Y8U8V8. This is a word-ordered format
+    /// where a pixel is represented by a 32-bit word with V
+    /// in the lowest 8 bits, U in the next 8 bits, Y in the
+    /// 8 bits after that and A in the highest 8 bits.
+    AYUV,
+    /// 8 bit Packed A8B8G8R8. This is a word-ordered format
+    /// where a pixel is represented by a 32-bit word with R
+    /// in the lowest 8 bits, G in the next 8 bits, B in the
+    /// 8 bits after that and A in the highest 8 bits.
+    ABGR,
+    /// 10 bit Packed A2B10G10R10. This is a word-ordered format
+    /// where a pixel is represented by a 32-bit word with R
+    /// in the lowest 10 bits, G in the next 10 bits, B in the
+    /// 10 bits after that and A in the highest 2 bits.
+    ABGR10,
+    /// Buffer format representing one-dimensional buffer.
+    /// This format should be used only when registering the
+    /// resource as output buffer, which will be used to write
+    /// the encoded bit stream or H.264 ME only mode output.
+    U8,
+}
+
+impl BufferFormat {
+    pub(crate) fn from_ffi(format: ffi::NV_ENC_BUFFER_FORMAT) -> Option<Self> {
+        match format {
+            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_NV12 => Some(BufferFormat::NV12),
+            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YV12 => Some(BufferFormat::YV12),
+            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_IYUV => Some(BufferFormat::IYUV),
+            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YUV444 => Some(BufferFormat::YUV444),
+            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YUV420_10BIT => {
+                Some(BufferFormat::YUV420P10)
+            }
+            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YUV444_10BIT => {
+                Some(BufferFormat::YUV444P10)
+            }
+            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ARGB => Some(BufferFormat::ARGB),
+            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ARGB10 => Some(BufferFormat::ARGB10),
+            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_AYUV => Some(BufferFormat::AYUV),
+            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ABGR => Some(BufferFormat::ABGR),
+            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ABGR10 => Some(BufferFormat::ABGR10),
+            ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_U8 => Some(BufferFormat::U8),
+            _ => None,
+        }
+    }
+}
+
+impl From<BufferFormat> for ffi::NV_ENC_BUFFER_FORMAT {
+    fn from(format: BufferFormat) -> Self {
+        match format {
+            BufferFormat::NV12 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_NV12,
+            BufferFormat::YV12 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YV12,
+            BufferFormat::IYUV => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_IYUV,
+            BufferFormat::YUV444 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YUV444,
+            BufferFormat::YUV420P10 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YUV420_10BIT,
+            BufferFormat::YUV444P10 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_YUV444_10BIT,
+            BufferFormat::ARGB => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ARGB,
+            BufferFormat::ARGB10 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ARGB10,
+            BufferFormat::AYUV => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_AYUV,
+            BufferFormat::ABGR => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ABGR,
+            BufferFormat::ABGR10 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_ABGR10,
+            BufferFormat::U8 => ffi::_NV_ENC_BUFFER_FORMAT_NV_ENC_BUFFER_FORMAT_U8,
+        }
+    }
+}

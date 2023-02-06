@@ -1360,14 +1360,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02296996cb8796d7c6e3bc2d9211b7802812d36999a51bb754123ead7d37d026"
 
 [[package]]
-name = "hwcodec-test"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "windows 0.44.0",
-]
-
-[[package]]
 name = "hyper"
 version = "0.14.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1865,6 +1857,7 @@ dependencies = [
 name = "nvcodec"
 version = "0.1.0"
 dependencies = [
+ "crossbeam",
  "libloading",
  "nvcodec-sys",
  "thiserror",
@@ -1876,8 +1869,6 @@ name = "nvcodec-sys"
 version = "0.1.0"
 dependencies = [
  "bindgen 0.63.0",
- "cc",
- "vcpkg",
 ]
 
 [[package]]
@@ -3133,6 +3124,7 @@ dependencies = [
  "lru",
  "memchr",
  "mfx-dispatch",
+ "nvcodec",
  "once_cell",
  "opus",
  "prometheus",
@@ -3571,6 +3563,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "windows-mft-encode"
+version = "0.1.0"
+dependencies = [
+ "crossbeam",
+ "thiserror",
+ "windows 0.44.0",
 ]
 
 [[package]]
