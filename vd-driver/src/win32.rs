@@ -110,7 +110,6 @@ impl FromStr for SecurityDescriptor {
     }
 }
 
-#[derive(Clone)]
 pub struct Mutex {
     handle: HANDLE,
 }
@@ -171,7 +170,6 @@ impl Drop for MutexGuard<'_> {
     }
 }
 
-#[derive(Clone)]
 pub struct Event {
     handle: HANDLE,
 }
@@ -218,7 +216,6 @@ impl Drop for Event {
     }
 }
 
-#[derive(Clone)]
 pub struct FileMapping {
     handle: HANDLE,
     ptr: *mut u8,
@@ -268,12 +265,19 @@ impl FileMapping {
             already_exists,
         ))
     }
-
-    pub fn buf(&self) -> &[u8] {
+    
+    /// # Safety
+    /// Since this file is mapped as read-write, it is possible to modify the file
+    /// from other processes.
+    pub unsafe fn buf(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 
-    pub fn buf_mut(&mut self) -> &mut [u8] {
+    /// # Safety
+    /// Since this file is mapped as read-write, it is possible to modify the file
+    /// from other processes.
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn buf_mut(&self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
 }
@@ -288,3 +292,4 @@ impl Drop for FileMapping {
 }
 
 unsafe impl Send for FileMapping {}
+unsafe impl Sync for FileMapping {}

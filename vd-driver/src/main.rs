@@ -72,7 +72,10 @@ pub async fn entry() -> Result<()> {
 
     let descriptor: win32::SecurityDescriptor = "D:(A;;0xc01f0003;;;AU)".parse()?;
 
-    let frame_buffer_mutex = win32::Mutex::new("Global\\VdMonitor0FBMutex", Some(&descriptor))?;
+    let frame_buffer_mutex = Arc::new(win32::Mutex::new(
+        "Global\\VdMonitor0FBMutex",
+        Some(&descriptor),
+    )?);
 
     let new_frame_event = win32::Event::new(
         "Global\\VdMonitor0NewFrameEvent",
@@ -88,14 +91,17 @@ pub async fn entry() -> Result<()> {
         false,
     )?;
 
-    let (mut frame_buffer_mapping, map_already_exists) = unsafe {
+    let (frame_buffer_mapping, map_already_exists) = unsafe {
         win32::FileMapping::new("Global\\VdMonitor0FB", Some(&descriptor), 1024 * 1024 * 20)?
     };
 
+    let frame_buffer_mapping = Arc::new(frame_buffer_mapping);
+
     if !map_already_exists {
         // We created the map, so we need to initialize it
-        // let _guard = frame_buffer_mutex.lock()?;
-        frame_buffer_mapping.buf_mut()[0..4].copy_from_slice(&[0, 0, 0, 0]);
+        let _guard = frame_buffer_mutex.lock()?;
+        let buf = unsafe { frame_buffer_mapping.buf_mut() };
+        buf[0..4].copy_from_slice(&[0, 0, 0, 0]);
     }
 
     let cursor_buffer_mutex =
@@ -142,10 +148,8 @@ pub async fn entry() -> Result<()> {
                 let _guard = fbmutex.lock().unwrap();
                 let config_size = 4 * 4;
                 let buffer_size = (monitor_.width() * monitor_.height() * 4) as usize;
-                monitor_.send_frame(
-                    &fbmap.buf()[config_size..config_size + buffer_size],
-                    Instant::now(),
-                );
+                let buf = unsafe { fbmap.buf() };
+                monitor_.send_frame(&buf[config_size..config_size + buffer_size], Instant::now());
             }
 
             let _ = ticker.tick().await;
@@ -154,7 +158,7 @@ pub async fn entry() -> Result<()> {
 
     let initial_configuration = {
         let _guard = frame_buffer_mutex.lock()?;
-        read_configuration(frame_buffer_mapping.buf())
+        read_configuration(unsafe { frame_buffer_mapping.buf() })
     };
 
     let initial_configuration = if let Some(cfg) = initial_configuration {
@@ -163,7 +167,8 @@ pub async fn entry() -> Result<()> {
         tracing::info!("Waiting for initial configuration");
         configure_event.wait(None)?;
         let _guard = frame_buffer_mutex.lock()?;
-        read_configuration(frame_buffer_mapping.buf()).expect("Failed to read configuration")
+        read_configuration(unsafe { frame_buffer_mapping.buf() })
+            .expect("Failed to read configuration")
     };
 
     monitor.configure(
@@ -187,7 +192,7 @@ pub async fn entry() -> Result<()> {
                 win32::WaitState::Signaled(0) | win32::WaitState::Abandoned(0) => {
                     let _guard = cursor_buffer_mutex.lock()?;
 
-                    let buf = cursor_mapping.buf();
+                    let buf = unsafe { cursor_mapping.buf() };
 
                     let width = u32::from_ne_bytes(buf[12..16].try_into().unwrap());
                     let height = u32::from_ne_bytes(buf[16..20].try_into().unwrap());
@@ -203,7 +208,7 @@ pub async fn entry() -> Result<()> {
                     monitor.set_cursor_image(width, height, image);
                 }
                 win32::WaitState::Signaled(1) | win32::WaitState::Abandoned(1) => {
-                    let buf = cursor_mapping.buf();
+                    let buf = unsafe { cursor_mapping.buf() };
 
                     // Coordinates might be negative, so we need to use i32
                     let x = i32::from_ne_bytes(buf[0..4].try_into().unwrap());
@@ -215,7 +220,7 @@ pub async fn entry() -> Result<()> {
                 win32::WaitState::Signaled(2) | win32::WaitState::Abandoned(2) => {
                     let configuration = {
                         let _guard = frame_buffer_mutex.lock()?;
-                        read_configuration(frame_buffer_mapping.buf()).unwrap()
+                        read_configuration(unsafe { frame_buffer_mapping.buf() }).unwrap()
                     };
                     monitor.configure(configuration.0, configuration.1, configuration.2);
                 }
