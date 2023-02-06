@@ -1,123 +1,46 @@
 use std::{mem::MaybeUninit, ptr::null_mut};
 
+use buffer::InputBuffer;
+use builder::EncoderConfig;
 pub use mfx_dispatch_sys as ffi;
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error(
-        "The function cannot find the desired legacy Intel(r) Media SDK implementation or version."
-    )]
-    Unsupported,
-    #[error("Invalid video parameters")]
-    InvalidVideoParam,
-    #[error("Incompatible video parameters")]
-    IncompatibleVideoParam,
-    #[error("Unknown error: {0}")]
-    Unknown(i32),
-}
+mod error;
+pub use error::{check_error, Error, Result};
+mod session;
+pub use session::Session;
+pub mod buffer;
+pub mod builder;
 
-fn check_error(err: i32) -> Result<()> {
-    match err {
-        ffi::mfxStatus_MFX_ERR_NONE
-        | ffi::mfxStatus_MFX_WRN_PARTIAL_ACCELERATION
-        | ffi::mfxStatus_MFX_WRN_INCOMPATIBLE_VIDEO_PARAM => Ok(()),
-        ffi::mfxStatus_MFX_ERR_UNSUPPORTED => Err(Error::Unsupported),
-        ffi::mfxStatus_MFX_ERR_INVALID_VIDEO_PARAM => Err(Error::InvalidVideoParam),
-        ffi::mfxStatus_MFX_ERR_INCOMPATIBLE_VIDEO_PARAM => Err(Error::IncompatibleVideoParam),
-        err => Err(Error::Unknown(err)),
-    }
-}
-
-fn align32(x: u16) -> u16 {
+pub(crate) fn align32(x: u16) -> u16 {
     ((x + 31) >> 5) << 5
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
-
-#[derive(Debug)]
-pub struct Session {
-    raw: ffi::mfxSession,
-    impl_: i32,
-}
-
-impl Session {
-    pub fn new() -> Result<Self> {
-        let mut version = ffi::mfxVersion {
-            __bindgen_anon_1: ffi::mfxVersion__bindgen_ty_1 { Major: 1, Minor: 0 },
-        };
-        let mut session = null_mut();
-
-        unsafe {
-            check_error(ffi::MFXInit(
-                ffi::MFX_IMPL_HARDWARE_ANY,
-                &mut version,
-                &mut session,
-            ))?;
-        };
-
-        let mut impl_ = MaybeUninit::uninit();
-
-        unsafe {
-            check_error(ffi::MFXQueryIMPL(session, impl_.as_mut_ptr()))?;
-        }
-
-        Ok(Self {
-            raw: session,
-            impl_: unsafe { impl_.assume_init() },
-        })
-    }
-
-    pub fn implementation(&self) -> i32 {
-        self.impl_
-    }
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        unsafe {
-            ffi::MFXClose(self.raw);
-        }
-    }
-}
-
-pub struct Pipeline {
+pub struct Pipeline<B> {
     session: Session,
 
-    width: u16,
     buffer_width: u16,
-    height: u16,
     buffer_height: u16,
-    framerate: u16,
-    quality: u8,
 
     sps: Vec<u8>,
     pps: Vec<u8>,
 
-    surfaces: Vec<(Vec<u8>, ffi::mfxFrameSurface1)>,
+    surfaces: Vec<B>,
 
     encoded_buffer: Vec<u8>,
     encoded_bitstream: ffi::mfxBitstream,
 }
 
-unsafe impl Send for Pipeline {}
+unsafe impl<B> Send for Pipeline<B> {}
 
-impl Pipeline {
-    /// ## Arguments
-    /// * `width` - Width of the video in pixels
-    /// * `height` - Height of the video in pixels
-    /// * `framerate` - Framerate of the video in frames per second
-    /// * `quality` - Quality of the video, 1-51, 1 being the best
-    pub fn new(width: u16, height: u16, framerate: u16, quality: u8) -> Result<Self> {
+impl<B: InputBuffer> Pipeline<B> {
+    pub fn new(config: EncoderConfig) -> Result<Self> {
         let session = Session::new()?;
 
         let mut this = Self {
             session,
-            width,
-            height,
+
             buffer_width: 0,
             buffer_height: 0,
-            framerate,
-            quality,
 
             sps: vec![],
             pps: vec![],
@@ -128,130 +51,54 @@ impl Pipeline {
             encoded_bitstream: unsafe { std::mem::zeroed() },
         };
 
-        this.configure(ConfigureMethod::Init)?;
+        this.configure(config, ConfigureMethod::Init)?;
 
         Ok(this)
     }
 
-    /// ## Arguments
-    /// The same as in [`new`].
-    pub fn reset(&mut self, width: u16, height: u16, framerate: u16, quality: u8) -> Result<()> {
-        self.width = width;
-        self.height = height;
-        self.framerate = framerate;
-        self.quality = quality;
-
-        self.configure(ConfigureMethod::Reset)?;
+    pub fn reset(&mut self, config: EncoderConfig) -> Result<()> {
+        self.configure(config, ConfigureMethod::Reset)?;
 
         Ok(())
     }
 
     /// The encoder might no longer be usable if this call fails.
-    fn configure(&mut self, method: ConfigureMethod) -> Result<()> {
-        let mut enc_par: ffi::mfxVideoParam = unsafe { std::mem::zeroed() };
-        enc_par.IOPattern = ffi::MFX_IOPATTERN_IN_SYSTEM_MEMORY as u16
+    fn configure(&mut self, config: EncoderConfig, method: ConfigureMethod) -> Result<()> {
+        let mut param = config.inner;
+        let mut opt2 = config.opt2;
+        let mut opt3 = config.opt3;
+
+        B::FORMAT.fill_config(&mut param);
+
+        param.IOPattern = ffi::MFX_IOPATTERN_IN_SYSTEM_MEMORY as u16
             | ffi::MFX_IOPATTERN_OUT_SYSTEM_MEMORY as u16;
 
-        enc_par
+        // TODO: Make these configurable.
+        param
             .__bindgen_anon_1
             .mfx
             .__bindgen_anon_1
             .__bindgen_anon_1
             .GopRefDist = 1;
-        enc_par
+        param
             .__bindgen_anon_1
             .mfx
             .__bindgen_anon_1
             .__bindgen_anon_1
             .IdrInterval = 1;
 
-        enc_par.__bindgen_anon_1.mfx.CodecId = ffi::MFX_CODEC_AVC as u32;
-        enc_par.__bindgen_anon_1.mfx.CodecProfile = ffi::MFX_PROFILE_AVC_BASELINE as u16;
-        enc_par
-            .__bindgen_anon_1
-            .mfx
-            .__bindgen_anon_1
-            .__bindgen_anon_1
-            .TargetUsage = ffi::MFX_TARGETUSAGE_BEST_SPEED as u16;
-        enc_par
-            .__bindgen_anon_1
-            .mfx
-            .__bindgen_anon_1
-            .__bindgen_anon_1
-            .RateControlMethod = ffi::MFX_RATECONTROL_ICQ as u16;
-        enc_par
-            .__bindgen_anon_1
-            .mfx
-            .__bindgen_anon_1
-            .__bindgen_anon_1
-            .__bindgen_anon_2
-            .ICQQuality = self.quality as u16;
-
-        enc_par.__bindgen_anon_1.mfx.FrameInfo.FrameRateExtN = self.framerate as u32;
-        enc_par.__bindgen_anon_1.mfx.FrameInfo.FrameRateExtD = 1;
-        enc_par.__bindgen_anon_1.mfx.FrameInfo.FourCC = ffi::MFX_FOURCC_NV12 as u32;
-        enc_par.__bindgen_anon_1.mfx.FrameInfo.ChromaFormat = ffi::MFX_CHROMAFORMAT_YUV420 as u16;
-        enc_par.__bindgen_anon_1.mfx.FrameInfo.PicStruct = ffi::MFX_PICSTRUCT_PROGRESSIVE as u16;
-
-        let buffer_width = align32(self.width);
-        let buffer_height = align32(self.height);
-
-        enc_par
-            .__bindgen_anon_1
-            .mfx
-            .FrameInfo
-            .__bindgen_anon_1
-            .__bindgen_anon_1
-            .CropW = self.width;
-        enc_par
-            .__bindgen_anon_1
-            .mfx
-            .FrameInfo
-            .__bindgen_anon_1
-            .__bindgen_anon_1
-            .CropH = self.height;
-
-        enc_par
-            .__bindgen_anon_1
-            .mfx
-            .FrameInfo
-            .__bindgen_anon_1
-            .__bindgen_anon_1
-            .Width = buffer_width;
-        enc_par
-            .__bindgen_anon_1
-            .mfx
-            .FrameInfo
-            .__bindgen_anon_1
-            .__bindgen_anon_1
-            .Height = buffer_height;
-
-        let mut coding_option_2: ffi::mfxExtCodingOption2 = unsafe { std::mem::zeroed() };
-        coding_option_2.Header = ffi::mfxExtBuffer {
-            BufferId: ffi::MFX_EXTBUFF_CODING_OPTION2 as u32,
-            BufferSz: std::mem::size_of::<ffi::mfxExtCodingOption2>() as u32,
-        };
-        coding_option_2.BRefType = ffi::MFX_B_REF_OFF as u16; // Disable B-frame
-
-        let mut coding_option_3: ffi::mfxExtCodingOption3 = unsafe { std::mem::zeroed() };
-        coding_option_3.Header = ffi::mfxExtBuffer {
-            BufferId: ffi::MFX_EXTBUFF_CODING_OPTION3 as u32,
-            BufferSz: std::mem::size_of::<ffi::mfxExtCodingOption3>() as u32,
-        };
-        coding_option_3.ScenarioInfo = ffi::MFX_SCENARIO_DISPLAY_REMOTING as u16;
-        coding_option_3.ContentInfo = ffi::MFX_CONTENT_NON_VIDEO_SCREEN as u16;
-
-        let ext_params =
-            &mut [&mut coding_option_2 as *mut ffi::mfxExtCodingOption2 as *mut ffi::mfxExtBuffer];
-
-        enc_par.ExtParam = ext_params.as_mut_ptr();
-        enc_par.NumExtParam = ext_params.len() as u16;
+        let ext_params = &mut [
+            &mut opt2.Header as *mut ffi::mfxExtBuffer,
+            &mut opt3.Header as *mut ffi::mfxExtBuffer,
+        ];
+        param.ExtParam = ext_params.as_mut_ptr();
+        param.NumExtParam = ext_params.len() as _;
 
         unsafe {
             check_error(ffi::MFXVideoENCODE_Query(
                 self.session.raw,
-                &mut enc_par,
-                &mut enc_par,
+                &mut param,
+                &mut param,
             ))?;
         }
 
@@ -259,38 +106,26 @@ impl Pipeline {
         unsafe {
             check_error(ffi::MFXVideoENCODE_QueryIOSurf(
                 self.session.raw,
-                &mut enc_par,
+                &mut param,
                 alloc_request.as_mut_ptr(),
             ))?;
         }
         let alloc_request = unsafe { alloc_request.assume_init() };
 
         let buffer_width =
-            unsafe { alloc_request.Info.__bindgen_anon_1.__bindgen_anon_1.Width } as usize;
+            unsafe { alloc_request.Info.__bindgen_anon_1.__bindgen_anon_1.Width } as u32;
         let buffer_height =
-            unsafe { alloc_request.Info.__bindgen_anon_1.__bindgen_anon_1.Height } as usize;
-
-        let buffer_size = buffer_width * buffer_height * 3 / 2; // NV12
+            unsafe { alloc_request.Info.__bindgen_anon_1.__bindgen_anon_1.Height } as u32;
 
         let mut surfaces = vec![];
         for _ in 0..alloc_request.NumFrameSuggested {
-            let mut buffer = vec![0u8; buffer_size];
-            let buffer_y_ptr = buffer.as_mut_ptr();
-            let buffer_uv_ptr = unsafe { buffer_y_ptr.add(buffer_width * buffer_height) };
-
-            let mut surface: ffi::mfxFrameSurface1 = unsafe { std::mem::zeroed() };
-            surface.Info = alloc_request.Info;
-            surface.Data.__bindgen_anon_3.Y = buffer_y_ptr;
-            surface.Data.__bindgen_anon_4.UV = buffer_uv_ptr;
-            surface.Data.__bindgen_anon_2.PitchLow = buffer_width as u16;
-
-            surfaces.push((buffer, surface));
+            surfaces.push(B::allocate(alloc_request.Info, buffer_width, buffer_height));
         }
 
         unsafe {
             match method {
                 ConfigureMethod::Init => {
-                    check_error(ffi::MFXVideoENCODE_Init(self.session.raw, &mut enc_par))?;
+                    check_error(ffi::MFXVideoENCODE_Init(self.session.raw, &mut param))?;
                 }
                 ConfigureMethod::Reset => {
                     // Drain remaining frames
@@ -320,19 +155,9 @@ impl Pipeline {
                             }
                         }
                     }
-                    match ffi::MFXVideoENCODE_Reset(self.session.raw, &mut enc_par) {
-                        ffi::mfxStatus_MFX_ERR_NONE => {
-                            // Reset successful
-                        }
-                        ffi::mfxStatus_MFX_ERR_INCOMPATIBLE_VIDEO_PARAM => {
-                            // Reset failed, close and re-init
-                            check_error(ffi::MFXVideoENCODE_Close(self.session.raw))?;
-                            return self.configure(ConfigureMethod::Init);
-                        }
-                        e => {
-                            check_error(e)?;
-                        }
-                    }
+                    // Reset the encoder
+                    check_error(ffi::MFXVideoENCODE_Close(self.session.raw))?;
+                    check_error(ffi::MFXVideoENCODE_Init(self.session.raw, &mut param))?;
                 }
             }
         }
@@ -399,12 +224,10 @@ impl Pipeline {
     /// Get a free surface to encode a frame into.
     ///
     /// Returns the index of the surface and a mutable reference to the buffer of Y and UV planes.
-    pub fn get_free_surface(&mut self) -> Option<(usize, &mut [u8], &mut [u8])> {
-        for (i, (buffer, surface)) in self.surfaces.iter_mut().enumerate() {
-            if surface.Data.Locked == 0 {
-                let uv_offset = self.buffer_width as usize * self.buffer_height as usize;
-                let (buffer_y, buffer_uv) = buffer.split_at_mut(uv_offset);
-                return Some((i, buffer_y, buffer_uv));
+    pub fn get_free_surface(&mut self) -> Option<(usize, &mut B)> {
+        for (i, buffer) in self.surfaces.iter_mut().enumerate() {
+            if !buffer.locked() {
+                return Some((i, buffer));
             }
         }
 
@@ -428,7 +251,7 @@ impl Pipeline {
         surface_index: usize,
         force_keyframe: bool,
     ) -> Result<Option<&[u8]>> {
-        let (_, surface) = &mut self.surfaces[surface_index];
+        let surface = self.surfaces[surface_index].surface_mut();
 
         let mut sync_point = null_mut();
 
@@ -475,7 +298,7 @@ impl Pipeline {
     }
 }
 
-impl Drop for Pipeline {
+impl<B> Drop for Pipeline<B> {
     fn drop(&mut self) {
         unsafe {
             ffi::MFXVideoENCODE_Close(self.session.raw);
@@ -491,19 +314,34 @@ enum ConfigureMethod {
 
 #[cfg(test)]
 mod test {
+    use crate::{
+        buffer::BgraBuffer,
+        builder::{Codec, H264Profile, RateControlMethod, RequiredFields},
+    };
+
     use super::*;
 
     #[test]
     #[ignore]
     fn encode() {
-        let mut pipeline = Pipeline::new(1920, 1080, 60, 20).unwrap();
+        let mut pipeline = Pipeline::<BgraBuffer>::new(
+            EncoderConfig::new(RequiredFields {
+                width: 1920,
+                height: 1080,
+                codec: Codec::H264 {
+                    profile: Some(H264Profile::Baseline),
+                },
+                framerate: (60, 1),
+            })
+            .with_rate_control(RateControlMethod::IntelligentConstantQuality { quality: 10 }),
+        )
+        .unwrap();
 
         std::thread::spawn(move || {
             for i in 0..30 {
                 let start = std::time::Instant::now();
-                let (buf_idx, buf_y, buf_uv) = pipeline.get_free_surface().unwrap();
-                buf_y.fill(128);
-                buf_uv.fill(128);
+                let (buf_idx, buf) = pipeline.get_free_surface().unwrap();
+                buf.data_mut().fill(128);
                 let _data = pipeline.encode_frame(buf_idx, false).unwrap();
                 println!("frame {} took {:?}", i, start.elapsed());
             }

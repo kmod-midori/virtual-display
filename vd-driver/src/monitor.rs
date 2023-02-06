@@ -10,6 +10,7 @@ use bytes::Bytes;
 use crossbeam::channel;
 use image::{ImageBuffer, ImageOutputFormat, Rgba};
 use lru::LruCache;
+use mfx_dispatch::builder::{EncoderConfig, RateControlMethod, RequiredFields};
 use tokio::sync::{broadcast, watch};
 
 use crate::{get_app, utils::Sample};
@@ -276,10 +277,10 @@ fn encoding_thread(
     let encoded_frames_local = metrics.encoded_frames.local();
     let encoding_latency_ms_local = metrics.encoding_latency_ms.local();
 
-    let mut encoder: Option<mfx_dispatch::Pipeline> = None;
+    let mut encoder: Option<mfx_dispatch::Pipeline<mfx_dispatch::buffer::BgraBuffer>> = None;
 
-    let mut width = 0;
-    let mut height = 0;
+    let mut width = 0u32;
+    let mut height = 0u32;
     let mut framerate = 0;
     let mut sample_duration = Duration::from_secs_f64(0.0);
 
@@ -309,8 +310,8 @@ fn encoding_thread(
                     tracing::info!("New client connected, forcing keyframe");
                 }
 
-                let dst_stride = encoder.stride();
-                let (buf_index, buf_y, buf_uv) = encoder.get_free_surface().unwrap();
+                let (buf_index, buf) = encoder.get_free_surface().unwrap();
+                let dst_stride = buf.stride();
                 let src = bgra_buffer.lock().unwrap();
 
                 if src.len() != (width * height * 4) as usize {
@@ -318,7 +319,14 @@ fn encoding_thread(
                     continue;
                 }
 
-                crate::utils::bgra2nv12(width, height, &src, Some(dst_stride), buf_y, buf_uv)?;
+                for row in 0..height {
+                    let src_offset = (row * width * 4) as usize;
+                    let dst_offset = (row * dst_stride as u32) as usize;
+                    let len = (width * 4) as usize;
+
+                    buf.data_mut()[dst_offset..dst_offset + len]
+                        .copy_from_slice(&src[src_offset..src_offset + len]);
+                }
 
                 let encoding_start = Instant::now();
                 if let Some(data) =
@@ -356,16 +364,21 @@ fn encoding_thread(
 
                 tracing::info!(?width, ?height, ?framerate, "Configuring encoder with");
 
+                let config = EncoderConfig::new(RequiredFields {
+                    width: width as u16,
+                    height: height as u16,
+                    codec: mfx_dispatch::builder::Codec::H264 {
+                        profile: Some(mfx_dispatch::builder::H264Profile::Baseline),
+                    },
+                    framerate: (framerate as u16, 1),
+                })
+                .with_rate_control(RateControlMethod::IntelligentConstantQuality { quality: 10 });
+
                 let e = if let Some(encoder) = &mut encoder {
-                    encoder.reset(width as u16, height as u16, framerate as u16, 10)?;
+                    encoder.reset(config)?;
                     encoder
                 } else {
-                    encoder = Some(mfx_dispatch::Pipeline::new(
-                        width as u16,
-                        height as u16,
-                        framerate as u16,
-                        10,
-                    )?);
+                    encoder = Some(mfx_dispatch::Pipeline::new(config)?);
                     encoder.as_mut().unwrap()
                 };
 
