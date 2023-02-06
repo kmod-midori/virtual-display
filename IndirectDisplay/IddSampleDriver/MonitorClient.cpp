@@ -113,7 +113,7 @@ void MonitorClient::CommitModes(uint32_t width, uint32_t height, uint32_t framer
   SetEvent(m_ConfigureEvent.Get());
 }
 
-void MonitorClient::SendFrame(const uint8_t* buffer, size_t buffer_len) {
+void MonitorClient::SendFrame(const uint8_t* buffer, uint32_t width, uint32_t height, uint32_t src_stride) {
   if (m_FrameBuffer == nullptr) {
     return;
   }
@@ -121,7 +121,15 @@ void MonitorClient::SendFrame(const uint8_t* buffer, size_t buffer_len) {
   auto guard = m_FrameBufferMutex.Lock();
   // It's fine even if the user-space server crashes, so we don't check for errors.
 
-  memcpy(m_FrameBuffer + sizeof(MonitorConfiguration), buffer, buffer_len);
+  auto dst_stride = width * 4;
+  auto src = buffer;
+  auto dst = m_FrameBuffer + sizeof(MonitorConfiguration);
+
+  for (uint32_t i = 0; i < height; i++) {
+    memcpy(dst, src, dst_stride);
+    src += src_stride;
+    dst += dst_stride;
+  }
 
   if (guard.IsLocked()) {
     guard.Unlock();

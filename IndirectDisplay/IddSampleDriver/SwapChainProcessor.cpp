@@ -112,21 +112,9 @@ void SwapChainProcessor::RunCore() {
 
       ComPtr<ID3D11Texture2D> gpuImage;
 
-      //if (Buffer.MetaData.DirtyRectCount == 0 && Buffer.MetaData.MoveRegionCount == 0) {
-      //  goto next;
-      //}
-
-      // ==============================
-      // TODO: Process the frame here
-      //
-      // This is the most performance-critical section of code in an IddCx driver. It's important that whatever
-      // is done with the acquired surface be finished as quickly as possible. This operation could be:
-      //  * a GPU copy to another buffer surface for later processing (such as a staging surface for mapping to CPU memory)
-      //  * a GPU encode operation
-      //  * a GPU VPBlt to another surface
-      //  * a GPU custom compute shader encode operation
-      // ==============================
-
+      if (Buffer.MetaData.DirtyRectCount == 0 && Buffer.MetaData.MoveRegionCount == 0) {
+        goto next;
+      }
 
       hr = AcquiredBuffer->QueryInterface(_uuidof(ID3D11Texture2D), &gpuImage);
       if (FAILED(hr)) {
@@ -154,8 +142,9 @@ void SwapChainProcessor::RunCore() {
         goto next;
       }
 
-      auto bufferLength = cpuImageDesc.Width * cpuImageDesc.Height * 4; // BGRA, 32bpp
-      m_RustMonitor->SendFrame(static_cast<uint8_t*>(mappedCpuImage.pData), bufferLength);
+      m_RustMonitor->SendFrame(
+        static_cast<uint8_t*>(mappedCpuImage.pData), cpuImageDesc.Width, cpuImageDesc.Height, mappedCpuImage.RowPitch
+      );
 
       m_Device->DeviceContext->Unmap(cpuImage.Get(), 0);
 

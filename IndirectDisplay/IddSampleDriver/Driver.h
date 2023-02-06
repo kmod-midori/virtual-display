@@ -72,7 +72,7 @@ namespace Microsoft {
       ~MonitorClient();
 
       void CommitModes(uint32_t width, uint32_t height, uint32_t framerate);
-      void SendFrame(const uint8_t* buffer, size_t buffer_len);
+      void SendFrame(const uint8_t* buffer, uint32_t width, uint32_t height, uint32_t src_stride);
 
       void UpdateCursorPosition(int32_t x, int32_t y, bool visible);
       void UpdateCursorImage(uint32_t width, uint32_t height, const uint8_t* buffer, uint32_t pitch);
