@@ -18,7 +18,7 @@ pub(crate) mod private {
     }
 }
 
-/// See https://github.com/Intel-Media-SDK/MediaSDK/blob/master/samples/sample_common/src/sysmem_allocator.cpp#L77
+/// See <https://github.com/Intel-Media-SDK/MediaSDK/blob/master/samples/sample_common/src/sysmem_allocator.cpp#L77>
 /// for the actual layout of these formats.
 #[derive(Debug, Clone, Copy)]
 pub enum InputFormat {

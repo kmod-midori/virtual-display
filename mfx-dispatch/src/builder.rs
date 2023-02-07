@@ -160,7 +160,9 @@ impl Codec {
     }
 }
 
-/// https://spec.oneapi.io/versions/latest/elements/oneVPL/source/API_ref/VPL_enums.html#ratecontrolmethod
+/// Rate control method to use.
+/// 
+/// <https://spec.oneapi.io/versions/latest/elements/oneVPL/source/API_ref/VPL_enums.html#ratecontrolmethod>
 #[derive(Debug, Clone)]
 pub enum RateControlMethod {
     /// The encoder attempts to maintain a constant bitrate.

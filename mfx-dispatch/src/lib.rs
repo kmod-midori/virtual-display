@@ -10,6 +10,7 @@ mod session;
 pub use session::Session;
 pub mod buffer;
 pub mod builder;
+pub mod adapter;
 
 pub(crate) fn align32(x: u16) -> u16 {
     ((x + 31) >> 5) << 5
