@@ -1,13 +1,13 @@
 pub use mfx_dispatch_sys as ffi;
 
-use crate::align32;
+use crate::{align32, buffer::InputFormat};
 
 pub struct EncoderConfig {
     pub(crate) inner: ffi::mfxVideoParam,
     pub(crate) opt2: ffi::mfxExtCodingOption2,
     pub(crate) opt3: ffi::mfxExtCodingOption3,
 
-    // pub(crate) format: InputFormat,
+    pub(crate) format: InputFormat,
 }
 
 impl EncoderConfig {
@@ -39,7 +39,7 @@ impl EncoderConfig {
             opt2,
             opt3,
 
-            // format: req.format,
+            format: req.format,
         }
     }
 
@@ -60,8 +60,8 @@ pub struct RequiredFields {
     pub codec: Codec,
     /// Specified as `(numerator, denominator)`.
     pub framerate: (u16, u16),
-    // /// The pixel format of the input frames.
-    // pub format: InputFormat,
+    /// The pixel format of the input frames.
+    pub format: InputFormat,
 }
 
 impl RequiredFields {
@@ -103,7 +103,7 @@ impl RequiredFields {
         config.__bindgen_anon_1.mfx.FrameInfo.FrameRateExtN = self.framerate.0 as _;
         config.__bindgen_anon_1.mfx.FrameInfo.FrameRateExtD = self.framerate.1 as _;
 
-        // self.format.fill_config(config);
+        self.format.fill_config(config);
         // Always output YUV420.
         config.__bindgen_anon_1.mfx.FrameInfo.ChromaFormat = ffi::MFX_CHROMAFORMAT_YUV420 as u16;
         // Always output progressive frames.

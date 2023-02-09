@@ -8,40 +8,34 @@ mod error;
 pub use error::{check_error, Error, Result};
 mod session;
 pub use session::Session;
+pub mod adapter;
 pub mod buffer;
 pub mod builder;
-pub mod adapter;
 
 pub(crate) fn align32(x: u16) -> u16 {
     ((x + 31) >> 5) << 5
 }
 
-pub struct Pipeline<B> {
+pub struct Pipeline {
     session: Session,
-
-    buffer_width: u16,
-    buffer_height: u16,
 
     sps: Vec<u8>,
     pps: Vec<u8>,
 
-    surfaces: Vec<B>,
+    surfaces: Vec<InputBuffer>,
 
     encoded_buffer: Vec<u8>,
     encoded_bitstream: ffi::mfxBitstream,
 }
 
-unsafe impl<B> Send for Pipeline<B> {}
+unsafe impl Send for Pipeline {}
 
-impl<B: InputBuffer> Pipeline<B> {
+impl Pipeline {
     pub fn new(config: EncoderConfig) -> Result<Self> {
         let session = Session::new()?;
 
         let mut this = Self {
             session,
-
-            buffer_width: 0,
-            buffer_height: 0,
 
             sps: vec![],
             pps: vec![],
@@ -68,8 +62,7 @@ impl<B: InputBuffer> Pipeline<B> {
         let mut param = config.inner;
         let mut opt2 = config.opt2;
         let mut opt3 = config.opt3;
-
-        B::FORMAT.fill_config(&mut param);
+        let format = config.format;
 
         param.IOPattern = ffi::MFX_IOPATTERN_IN_SYSTEM_MEMORY as u16
             | ffi::MFX_IOPATTERN_OUT_SYSTEM_MEMORY as u16;
@@ -113,14 +106,9 @@ impl<B: InputBuffer> Pipeline<B> {
         }
         let alloc_request = unsafe { alloc_request.assume_init() };
 
-        let buffer_width =
-            unsafe { alloc_request.Info.__bindgen_anon_1.__bindgen_anon_1.Width } as u32;
-        let buffer_height =
-            unsafe { alloc_request.Info.__bindgen_anon_1.__bindgen_anon_1.Height } as u32;
-
         let mut surfaces = vec![];
         for _ in 0..alloc_request.NumFrameSuggested {
-            surfaces.push(B::allocate(alloc_request.Info, buffer_width, buffer_height));
+            surfaces.push(InputBuffer::new(format, alloc_request.Info));
         }
 
         unsafe {
@@ -209,8 +197,6 @@ impl<B: InputBuffer> Pipeline<B> {
         encoded_bitstream.MaxLength = encoded_buffer_size as u32;
         encoded_bitstream.Data = encoded_buffer.as_mut_ptr();
 
-        self.buffer_width = buffer_width as u16;
-        self.buffer_height = buffer_height as u16;
         self.sps = sps_buffer[..coding_option_sps_pps.SPSBufSize as usize].to_vec();
         self.pps = pps_buffer[..coding_option_sps_pps.PPSBufSize as usize].to_vec();
 
@@ -225,7 +211,7 @@ impl<B: InputBuffer> Pipeline<B> {
     /// Get a free surface to encode a frame into.
     ///
     /// Returns the index of the surface and a mutable reference to the buffer of Y and UV planes.
-    pub fn get_free_surface(&mut self) -> Option<(usize, &mut B)> {
+    pub fn get_free_surface(&mut self) -> Option<(usize, &mut InputBuffer)> {
         for (i, buffer) in self.surfaces.iter_mut().enumerate() {
             if !buffer.locked() {
                 return Some((i, buffer));
@@ -233,10 +219,6 @@ impl<B: InputBuffer> Pipeline<B> {
         }
 
         None
-    }
-
-    pub fn stride(&self) -> usize {
-        self.buffer_width as usize
     }
 
     pub fn sps(&self) -> &[u8] {
@@ -299,7 +281,7 @@ impl<B: InputBuffer> Pipeline<B> {
     }
 }
 
-impl<B> Drop for Pipeline<B> {
+impl Drop for Pipeline {
     fn drop(&mut self) {
         unsafe {
             ffi::MFXVideoENCODE_Close(self.session.raw);
@@ -315,17 +297,14 @@ enum ConfigureMethod {
 
 #[cfg(test)]
 mod test {
-    use crate::{
-        buffer::BgraBuffer,
-        builder::{Codec, H264Profile, RateControlMethod, RequiredFields},
-    };
+    use crate::builder::{Codec, H264Profile, RateControlMethod, RequiredFields};
 
     use super::*;
 
     #[test]
     #[ignore]
     fn encode() {
-        let mut pipeline = Pipeline::<BgraBuffer>::new(
+        let mut pipeline = Pipeline::new(
             EncoderConfig::new(RequiredFields {
                 width: 1920,
                 height: 1080,
@@ -333,6 +312,7 @@ mod test {
                     profile: Some(H264Profile::Baseline),
                 },
                 framerate: (60, 1),
+                format: buffer::InputFormat::RGB4,
             })
             .with_rate_control(RateControlMethod::IntelligentConstantQuality { quality: 10 }),
         )

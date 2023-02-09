@@ -277,7 +277,7 @@ fn encoding_thread(
     let encoded_frames_local = metrics.encoded_frames.local();
     let encoding_latency_ms_local = metrics.encoding_latency_ms.local();
 
-    let mut encoder: Option<mfx_dispatch::Pipeline<mfx_dispatch::buffer::BgraBuffer>> = None;
+    let mut encoder: Option<mfx_dispatch::Pipeline> = None;
 
     let mut width = 0u32;
     let mut height = 0u32;
@@ -371,6 +371,7 @@ fn encoding_thread(
                         profile: Some(mfx_dispatch::builder::H264Profile::Baseline),
                     },
                     framerate: (framerate as u16, 1),
+                    format: mfx_dispatch::buffer::InputFormat::RGB4,
                 })
                 .with_rate_control(RateControlMethod::IntelligentConstantQuality { quality: 10 });
 
