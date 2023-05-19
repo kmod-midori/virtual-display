@@ -72,6 +72,4 @@ fn main() -> Result<()> {
     loop {
         std::thread::sleep(std::time::Duration::from_secs(20));
     }
-
-    Ok(())
 }

@@ -321,7 +321,7 @@ fn encoding_thread(
 
                 for row in 0..height {
                     let src_offset = (row * width * 4) as usize;
-                    let dst_offset = (row * dst_stride as u32) as usize;
+                    let dst_offset = (row * dst_stride as u32) as usize * 4;
                     let len = (width * 4) as usize;
 
                     buf.data_mut()[dst_offset..dst_offset + len]

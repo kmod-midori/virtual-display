@@ -189,6 +189,7 @@ fn audio_thread(audio_codec_data_tx: watch::Sender<Option<AudioCodecData>>) -> R
             |err| {
                 tracing::error!(?err, "Audio stream error");
             },
+            None,
         )?;
         stream.play().context("Start audio stream")?;
         tracing::info!("Audio stream started");
