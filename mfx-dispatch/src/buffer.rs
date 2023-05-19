@@ -68,8 +68,7 @@ impl InputBuffer {
                 surface.Data.__bindgen_anon_3.Y = y;
                 surface.Data.__bindgen_anon_4.UV = uv;
 
-                surface.Data.PitchHigh = 0;
-                surface.Data.__bindgen_anon_2.PitchLow = buffer_width as u16;
+                surface.Data.__bindgen_anon_2.Pitch = buffer_width as u16;
             },
             InputFormat::RGB3 => unsafe {
                 let bgr = buffer_ptr;
@@ -78,8 +77,7 @@ impl InputBuffer {
                 surface.Data.__bindgen_anon_3.R = bgr.offset(2);
 
                 let pitch = buffer_width * 3;
-                surface.Data.PitchHigh = (pitch / (1 << 16)) as u16;
-                surface.Data.__bindgen_anon_2.PitchLow = (pitch % (1 << 16)) as u16;
+                surface.Data.__bindgen_anon_2.Pitch = pitch as u16;
             },
             InputFormat::RGB4 => unsafe {
                 let bgra = buffer_ptr;
@@ -89,8 +87,7 @@ impl InputBuffer {
                 surface.Data.A = bgra.offset(3);
 
                 let pitch = buffer_width * 4;
-                surface.Data.PitchHigh = (pitch / (1 << 16)) as u16;
-                surface.Data.__bindgen_anon_2.PitchLow = (pitch % (1 << 16)) as u16;
+                surface.Data.__bindgen_anon_2.Pitch = pitch as u16;
             },
         }
 
@@ -125,7 +122,7 @@ impl InputBuffer {
         unsafe { self.surface.Info.__bindgen_anon_1.__bindgen_anon_1.Height as usize }
     }
 
-    /// Stride (actual width) of the buffer in bytes.
+    /// Stride (actual width) of the buffer in pixels.
     pub fn stride(&self) -> usize {
         unsafe { self.surface.Info.__bindgen_anon_1.__bindgen_anon_1.Width as usize }
     }

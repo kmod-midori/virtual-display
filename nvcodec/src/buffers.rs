@@ -100,7 +100,7 @@ pub struct LockedInputBuffer<'b> {
 }
 
 impl<'b> LockedInputBuffer<'b> {
-    pub fn data(&mut self) -> &mut [u8] {
+    pub fn data_mut(&mut self) -> &mut [u8] {
         self.data
     }
 

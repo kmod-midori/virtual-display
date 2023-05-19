@@ -389,7 +389,7 @@ impl InitializedEncoder {
         self.input_buffer.as_mut().unwrap().lock()
     }
 
-    pub fn encode(&mut self, pts: u64) -> Result<Vec<(u64, &[u8])>> {
+    pub fn encode(&mut self, pts: u64, force_idr: bool) -> Result<Vec<(u64, &[u8])>> {
         let input_buffer = self.input_buffer.as_mut().unwrap();
 
         let mut args: ffi::NV_ENC_PIC_PARAMS = unsafe { std::mem::zeroed() };
@@ -401,6 +401,9 @@ impl InitializedEncoder {
         args.bufferFmt = input_buffer.format().into();
         args.inputTimeStamp = pts;
         args.pictureStruct = ffi::_NV_ENC_PIC_STRUCT_NV_ENC_PIC_STRUCT_FRAME;
+        if force_idr {
+            args.encodePicFlags |= ffi::_NV_ENC_PIC_FLAGS_NV_ENC_PIC_FLAG_FORCEIDR as u32;
+        }
 
         let output_buffer = self.output_buffers.pop().ok_or(Error::NotEnoughBuffer)?;
         args.outputBitstream = output_buffer.buffer;
@@ -486,6 +489,6 @@ fn encoder() {
         let mut b = encoder.lock_input_buffer().unwrap();
         b.data().fill(128);
         drop(b);
-        dbg!(encoder.encode(0).unwrap());
+        dbg!(encoder.encode(0, false).unwrap());
     }
 }
