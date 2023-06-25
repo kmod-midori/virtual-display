@@ -11,4 +11,7 @@ members = [
     "windows-mft-encode",
     "nvcodec-sys",
     "nvcodec",
+    "ffmpeg-sys",
+    "ffmpeg-simple",
+    "ffmpeg-test",
 ]

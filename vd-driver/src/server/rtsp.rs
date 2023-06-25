@@ -151,8 +151,10 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
                 sample.timestamp.duration_since(stream_start).as_secs_f64() * (clock_rate as f64);
 
             let data = &sample.data[..];
-            let mut h264 =
-                webrtc_media::io::h264_reader::H264Reader::new(std::io::Cursor::new(data));
+            let mut h264 = webrtc_media::io::h264_reader::H264Reader::new(
+                std::io::Cursor::new(data),
+                1024 * 1024,
+            );
 
             while let Ok(nal) = h264.next_nal() {
                 let samples = (sample.duration.as_secs_f64() * clock_rate as f64) as u32;
@@ -273,7 +275,7 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
 
                             let monitor_id = 0;
 
-                            if let Some(monitor) = get_app().monitors().get(&monitor_id) {
+                            if let Some(monitor) = get_app().get_monitor(monitor_id) {
                                 // Force TCP mode
                                 response_lines.push(
                                     "Transport: RTP/AVP/TCP;unicast;interleaved=0-1".to_string(),

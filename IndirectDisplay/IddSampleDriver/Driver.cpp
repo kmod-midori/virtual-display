@@ -28,9 +28,11 @@ using namespace Microsoft::WRL;
 // Default modes reported for edid-less monitors. The first mode is set as preferred
 static const struct IndirectSampleMonitor::SampleMonitorMode s_DefaultModes[] =
 {
+    { 2560, 1440, 60 },
+    { 1920, 1200, 60 },
     { 1920, 1080, 60 },
     { 1600,  900, 60 },
-    { 1024,  768, 75 },
+    { 1024,  768, 60 },
 };
 
 #pragma endregion
@@ -208,12 +210,21 @@ VOID IddSampleIoDeviceControl(_In_
   ULONG IoControlCode) {
   NTSTATUS Status = STATUS_SUCCESS;
 
-  //switch (IoControlCode) {
-  //case 233:
-  //  auto * pContext = WdfObjectGet_IndirectDeviceContextWrapper(Device);
-  //  pContext->pContext->CreateMonitor(0);
-  //  break;
-  //}
+  auto* pContext = WdfObjectGet_IndirectDeviceContextWrapper(Device);
+
+  PVOID  Buffer;
+  size_t BufSize;
+
+  switch (IoControlCode) {
+  case IOCTL_CHANGER_IDD_PLUG_IN:
+    Status = WdfRequestRetrieveInputBuffer(Request, sizeof(IoctlPlugIn), &Buffer, &BufSize);
+    if (!NT_SUCCESS(Status)) {
+      break;
+    }
+    auto* inputData = (IoctlPlugIn*)Buffer;
+    pContext->pContext->CreateMonitor(inputData->id);
+    break;
+  }
 
   WdfRequestComplete(Request, Status);
 }
@@ -268,12 +279,17 @@ NTSTATUS IddSampleAdapterCommitModes(IDDCX_ADAPTER AdapterObject, const IDARG_IN
     auto& path = pInArgs->pPaths[i];
 
     if ((path.Flags & IDDCX_PATH_FLAGS_ACTIVE) == 0) {
-      // This monitor is inactive, ignore
+      // This path is inactive, ignore
+      continue;
+    }
+
+    if ((path.Flags & IDDCX_PATH_FLAGS_CHANGED) == 0) {
+      // This path has not changed
       continue;
     }
 
     auto& mode = path.TargetVideoSignalInfo;
-    auto* pMonitorContextWrapper = WdfObjectGet_IndirectMonitorContextWrapper(pInArgs->pPaths[i].MonitorObject);
+    auto* pMonitorContextWrapper = WdfObjectGet_IndirectMonitorContextWrapper(path.MonitorObject);
     pMonitorContextWrapper->pContext->CommitModes(mode);
   }
 
@@ -284,27 +300,30 @@ _Use_decl_annotations_
 NTSTATUS IddSampleMonitorGetDefaultModes(IDDCX_MONITOR MonitorObject, const IDARG_IN_GETDEFAULTDESCRIPTIONMODES* pInArgs, IDARG_OUT_GETDEFAULTDESCRIPTIONMODES* pOutArgs) {
   UNREFERENCED_PARAMETER(MonitorObject);
 
-  // ==============================
-  // TODO: In a real driver, this function would be called to generate monitor modes for a monitor with no EDID.
-  // Drivers should report modes that are guaranteed to be supported by the transport protocol and by nearly all
-  // monitors (such 640x480, 800x600, or 1024x768). If the driver has access to monitor modes from a descriptor other
-  // than an EDID, those modes would also be reported here.
-  // ==============================
-
   if (pInArgs->DefaultMonitorModeBufferInputCount == 0) {
+    // The system asked for the size of this array
     pOutArgs->DefaultMonitorModeBufferOutputCount = ARRAYSIZE(s_DefaultModes);
-  } else {
+  }
+  else {
+    UINT PreferredModeIndex = NO_PREFERRED_MODE;
+
     for (DWORD ModeIndex = 0; ModeIndex < ARRAYSIZE(s_DefaultModes); ModeIndex++) {
+      auto mode = &s_DefaultModes[ModeIndex];
+
       pInArgs->pDefaultMonitorModes[ModeIndex] = CreateIddCxMonitorMode(
-        s_DefaultModes[ModeIndex].Width,
-        s_DefaultModes[ModeIndex].Height,
-        s_DefaultModes[ModeIndex].VSync,
+        mode->Width,
+        mode->Height,
+        mode->VSync,
         IDDCX_MONITOR_MODE_ORIGIN_DRIVER
       );
+
+      if (mode->Width == 1920 && mode->Height == 1080 && mode->VSync == 60) {
+        PreferredModeIndex = ModeIndex;
+      }
     }
 
     pOutArgs->DefaultMonitorModeBufferOutputCount = ARRAYSIZE(s_DefaultModes);
-    pOutArgs->PreferredMonitorModeIdx = 0;
+    pOutArgs->PreferredMonitorModeIdx = PreferredModeIndex;
   }
 
   return STATUS_SUCCESS;
@@ -326,10 +345,18 @@ NTSTATUS IddSampleMonitorQueryModes(IDDCX_MONITOR MonitorObject, const IDARG_IN_
   //TargetModes.push_back(CreateIddCxTargetMode(2560, 1440, 60));
   //TargetModes.push_back(CreateIddCxTargetMode(1920, 1080, 144));
   //TargetModes.push_back(CreateIddCxTargetMode(1920, 1080, 90));
-  TargetModes.push_back(CreateIddCxTargetMode(1920, 1080, 60));
-  TargetModes.push_back(CreateIddCxTargetMode(1600, 900, 60));
-  TargetModes.push_back(CreateIddCxTargetMode(1024, 768, 75));
-  TargetModes.push_back(CreateIddCxTargetMode(1024, 768, 60));
+  //TargetModes.push_back(CreateIddCxTargetMode(1920, 1080, 60));
+  //TargetModes.push_back(CreateIddCxTargetMode(1600, 900, 60));
+  //TargetModes.push_back(CreateIddCxTargetMode(1024, 768, 75));
+  //TargetModes.push_back(CreateIddCxTargetMode(1024, 768, 60));
+
+  for (DWORD ModeIndex = 0; ModeIndex < ARRAYSIZE(s_DefaultModes); ModeIndex++) {
+    TargetModes.push_back(CreateIddCxTargetMode(
+      s_DefaultModes[ModeIndex].Width,
+      s_DefaultModes[ModeIndex].Height,
+      s_DefaultModes[ModeIndex].VSync
+    ));
+  }
 
   pOutArgs->TargetModeBufferOutputCount = (UINT)TargetModes.size();
 

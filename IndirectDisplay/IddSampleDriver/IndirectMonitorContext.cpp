@@ -25,7 +25,7 @@ IndirectMonitorContext::~IndirectMonitorContext() {
     WaitForSingleObject(m_hCursorThread.Get(), INFINITE);
   }
 
-  m_ProcessingThread.reset();
+  m_SwapChainProcessor.reset();
   m_RustMonitor.reset();
   free(m_CursorBuffer);
 }
@@ -55,7 +55,7 @@ void IndirectMonitorContext::CommitModes(DISPLAYCONFIG_VIDEO_SIGNAL_INFO& Mode) 
 }
 
 void IndirectMonitorContext::AssignSwapChain(IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent) {
-  m_ProcessingThread.reset();
+  m_SwapChainProcessor.reset();
 
   auto Device = std::make_shared<Direct3DDevice>(RenderAdapter);
   if (FAILED(Device->Init())) {
@@ -65,18 +65,16 @@ void IndirectMonitorContext::AssignSwapChain(IDDCX_SWAPCHAIN SwapChain, LUID Ren
   }
   else {
     // Create a new swap-chain processing thread
-    m_ProcessingThread.reset(new SwapChainProcessor(SwapChain, Device, NewFrameEvent, m_RustMonitor));
+    m_SwapChainProcessor.reset(new SwapChainProcessor(SwapChain, Device, NewFrameEvent, m_RustMonitor));
   }
 }
 
 void IndirectMonitorContext::UnassignSwapChain() {
   // Stop processing the last swap-chain
-  m_ProcessingThread.reset();
+  m_SwapChainProcessor.reset();
 }
 
 void IndirectMonitorContext::CursorThread() {
-  HRESULT hr;
-
   for (;;) {
     HANDLE WaitHandles[] =
     {

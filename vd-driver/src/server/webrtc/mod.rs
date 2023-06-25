@@ -26,7 +26,7 @@ pub struct SdpRequest {
 }
 
 async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessionDescription> {
-    let monitor = if let Some(m) = crate::get_app().monitors().get(&index) {
+    let monitor = if let Some(m) = crate::get_app().get_monitor(index) {
         m.clone()
     } else {
         return Err(anyhow::anyhow!("Monitor with index {} not found", index));
@@ -225,10 +225,11 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
     // Set the handler for Peer connection state
     // This will notify you when the peer has connected/disconnected
     // let tx = ctx.encoding_cmd_tx.clone();
+    let done_ = done.clone();
     peer_connection.on_peer_connection_state_change(Box::new(move |s| {
         if s == RTCPeerConnectionState::Failed {
             // Connection has failed, close everything
-            done.notify_waiters();
+            done_.notify_waiters();
         }
 
         Box::pin(async {})
@@ -252,8 +253,15 @@ async fn webrtc_task(index: u32, sdp: RTCSessionDescription) -> Result<RTCSessio
     let _ = gather_complete.recv().await;
 
     if let Some(local_desc) = peer_connection.local_description().await {
+        // tokio::task::spawn_local(async move {
+        //     done.notified().await;
+        //     tracing::info!("Closing peer connection");
+        //     peer_connection.close().await.ok();
+        // });
+
         Ok(local_desc)
     } else {
+        // peer_connection.close().await.ok();
         Err(anyhow::anyhow!("Failed to get local description"))
     }
 }
@@ -272,7 +280,7 @@ async fn webrtc_server(mut sdp_rx: mpsc::Receiver<SdpRequest>) {
 }
 
 pub fn start(sdp_rx: mpsc::Receiver<SdpRequest>) {
-    tokio::spawn(async move {
+    tokio::task::spawn(async move {
         webrtc_server(sdp_rx).await;
         tracing::warn!("WebRTC server task exited");
     });

@@ -23,6 +23,10 @@ impl Application {
         self.monitors.read().unwrap()
     }
 
+    pub fn get_monitor(&self, index: u32) -> Option<MonitorHandle> {
+        self.monitors().get(&index).cloned()
+    }
+
     pub fn register_monitor(&self, index: u32, monitor: MonitorHandle) {
         self.monitors.write().unwrap().insert(index, monitor);
         tracing::info!(?index, "Registered monitor");

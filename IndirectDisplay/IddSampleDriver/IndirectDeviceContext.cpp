@@ -75,6 +75,13 @@ void IndirectDeviceContext::CreateMonitor(UINT ConnectorIndex) {
 
   WDF_OBJECT_ATTRIBUTES Attr;
   WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&Attr, IndirectMonitorContextWrapper);
+  Attr.EvtCleanupCallback = [](WDFOBJECT Object) {
+    auto* pContext = WdfObjectGet_IndirectMonitorContextWrapper(Object);
+    if (pContext) {
+      pContext->Cleanup();
+    }
+  };
+
 
   // In the sample driver, we report a monitor right away but a real driver would do this when a monitor connection event occurs
   IDDCX_MONITOR_INFO MonitorInfo = {};

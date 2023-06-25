@@ -16,7 +16,7 @@ pub async fn video_sender(
                 sample.record_end_to_end_latency();
 
                 let data = &sample.data[..];
-                let mut h264 = H264Reader::new(std::io::Cursor::new(data));
+                let mut h264 = H264Reader::new(std::io::Cursor::new(data), 1024 * 1024);
 
                 while let Ok(nal) = h264.next_nal() {
                     let res = track

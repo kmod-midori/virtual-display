@@ -125,6 +125,10 @@ void SwapChainProcessor::RunCore() {
       gpuImage->GetDesc(&gpuImageDesc);
 
       if (cpuImage == NULL || gpuImageDesc.Height != cpuImageDesc.Height || gpuImageDesc.Width != cpuImageDesc.Width) {
+        if (cpuImage != NULL) {
+          cpuImage->Release();
+        }
+
         cpuImageDesc.Height = gpuImageDesc.Height;
         cpuImageDesc.Width = gpuImageDesc.Width;
 

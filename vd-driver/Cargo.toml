@@ -51,7 +51,7 @@ webrtc = { version = "0.7.2", optional = true }
 
 # === Transport - RTSP
 rtp = "0.6.8"
-webrtc-media = "0.5.1"
+webrtc-media = "0.6.0"
 webrtc-util = "0.7.0"
 sdp = "0.5.3"
 httparse = "1.8.0"

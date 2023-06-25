@@ -14,7 +14,7 @@ async fn tcp_server() -> Result<()> {
         tokio::spawn(async move {
             socket.set_nodelay(true).ok();
 
-            let mut data_rx = if let Some(monitor) = get_app().monitors().get(&0) {
+            let mut data_rx = if let Some(monitor) = get_app().get_monitor(0) {
                 monitor.encoded_tx.subscribe()
             } else {
                 tracing::error!("Monitor 0 not found");

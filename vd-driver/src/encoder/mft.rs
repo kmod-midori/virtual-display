@@ -16,7 +16,7 @@ use windows::{
     },
 };
 
-use crate::variant::Variant;
+use crate::win32::Variant;
 
 pub struct EncoderHandle {
     frame_tx: channel::Sender<Arc<Mutex<Vec<u8>>>>,

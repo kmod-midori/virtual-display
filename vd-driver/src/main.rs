@@ -13,6 +13,7 @@ use std::{
 
 use once_cell::sync::OnceCell;
 
+mod adb;
 mod app;
 mod audio;
 mod encoder;
@@ -20,7 +21,6 @@ mod metrics;
 mod monitor;
 mod server;
 mod utils;
-mod variant;
 mod win32;
 
 use app::ApplicationHandle;
@@ -67,6 +67,7 @@ pub async fn entry() -> Result<()> {
     };
 
     server::start();
+    adb::AdbClient::start();
 
     tracing::info!("Initialized");
 

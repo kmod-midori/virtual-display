@@ -342,7 +342,7 @@ async fn handle(socket: TcpStream) -> Result<()> {
     let mut stream = VdStream { inner: socket };
 
     let monitor_id = stream.inner.read_u32().await?;
-    let monitor = if let Some(monitor) = get_app().monitors().get(&monitor_id) {
+    let monitor = if let Some(monitor) = get_app().get_monitor(monitor_id) {
         monitor.clone()
     } else {
         anyhow::bail!("Monitor {} not found", monitor_id);

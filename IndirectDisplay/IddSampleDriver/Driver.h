@@ -21,6 +21,15 @@
 #define CURSOR_MAX_WIDTH 32
 #define CURSOR_MAX_HEIGHT 32
 
+#define IOCTL_CHANGER_IDD_PLUG_IN             CTL_CODE(IOCTL_CHANGER_BASE, \
+                                                       0x1001, \
+                                                       METHOD_BUFFERED, \
+                                                       FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+
+typedef struct {
+  uint32_t id;
+} IoctlPlugIn;
+
 namespace Microsoft {
   namespace WRL {
     namespace Wrappers {
@@ -153,7 +162,7 @@ namespace Microsoft {
     private:
       IDDCX_MONITOR m_Monitor;
       std::shared_ptr<MonitorClient> m_RustMonitor;
-      std::unique_ptr<SwapChainProcessor> m_ProcessingThread;
+      std::unique_ptr<SwapChainProcessor> m_SwapChainProcessor;
       Microsoft::WRL::Wrappers::Thread m_hCursorThread;
       Microsoft::WRL::Wrappers::Event m_hNewCursorDataAvailableEvent;
       Microsoft::WRL::Wrappers::Event m_hTerminateCursorThreadEvent;
