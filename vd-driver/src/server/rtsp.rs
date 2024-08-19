@@ -158,7 +158,7 @@ async fn handle_conn(conn: TcpStream) -> Result<()> {
 
             while let Ok(nal) = h264.next_nal() {
                 let samples = (sample.duration.as_secs_f64() * clock_rate as f64) as u32;
-                let packets = packetizer.packetize(&nal.data.freeze(), samples).await?;
+                let packets = packetizer.packetize(&nal.data.freeze(), samples)?;
 
                 for mut packet in packets {
                     packet.header.timestamp = timestamp as u32;

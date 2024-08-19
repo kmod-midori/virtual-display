@@ -1,4 +1,5 @@
 [workspace]
+resolver = "2"
 members = [
     "vd-controller",
     "vd-driver",
@@ -9,3 +10,6 @@ members = [
     "ffmpeg-simple",
     "ffmpeg-test",
 ]
+
+[workspace.dependencies]
+bindgen = "0.70.0"

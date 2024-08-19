@@ -8,6 +8,17 @@
       "features": [
         "asm"
       ]
+    },
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "x264",
+        "amf",
+        "nvcodec",
+        "qsv"
+      ]
     }
   ]
 }

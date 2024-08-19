@@ -106,9 +106,8 @@ async fn http_server(ctx: HttpServerContext) -> Result<()> {
 
     app = app.layer(cors);
 
-    axum::Server::bind(&"0.0.0.0:9000".parse().unwrap())
-        .serve(app.into_make_service())
-        .await?;
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:9000").await?;
+    axum::serve(listener, app.into_make_service()).await?;
 
     Ok(())
 }

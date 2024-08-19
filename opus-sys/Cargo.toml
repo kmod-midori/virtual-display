@@ -8,6 +8,6 @@ edition = "2021"
 [dependencies]
 
 [build-dependencies]
-bindgen = "0.63.0"
+bindgen.workspace = true
 cc = "1.0"
 vcpkg = "0.2.15"
