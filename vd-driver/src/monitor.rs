@@ -5,13 +5,16 @@ use std::{
 };
 
 use anyhow::Result;
-
 use bytes::Bytes;
 use crossbeam::channel;
+use dcv_color_primitives as dcp;
+use ffmpeg_simple::{
+    codec::HwCodecSetupMethod, Codec, CodecContext, HwDeviceContext, OpenedCodecContext,
+};
 use image::{ImageBuffer, ImageOutputFormat, Rgba};
 use lru::LruCache;
-use mfx_dispatch::builder::{EncoderConfig, RateControlMethod, RequiredFields};
 use tokio::sync::{broadcast, watch};
+use webrtc_media::io::h264_reader::{H264Reader, NalUnitType};
 
 use crate::{get_app, utils::Sample};
 
@@ -277,14 +280,31 @@ fn encoding_thread(
     let encoded_frames_local = metrics.encoded_frames.local();
     let encoding_latency_ms_local = metrics.encoding_latency_ms.local();
 
-    let mut encoder: Option<mfx_dispatch::Pipeline> = None;
+    let mut encoder: Option<OpenedCodecContext> = None;
 
+    let mut pts = 0;
     let mut width = 0u32;
     let mut height = 0u32;
     let mut framerate = 0;
     let mut sample_duration = Duration::from_secs_f64(0.0);
 
     let mut last_receiver_count = 0;
+
+    let dcp_src_format = dcp::ImageFormat {
+        pixel_format: dcp::PixelFormat::Bgra,
+        color_space: dcp::ColorSpace::Rgb,
+        num_planes: 1,
+    };
+
+    let dcp_dst_format = dcp::ImageFormat {
+        pixel_format: dcp::PixelFormat::Nv12,
+        color_space: dcp::ColorSpace::Bt709,
+        num_planes: 2,
+    };
+
+    let mut sps = None;
+    let mut pps = None;
+    let mut sps_pps_sent = false;
 
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
@@ -310,8 +330,11 @@ fn encoding_thread(
                     tracing::info!("New client connected, forcing keyframe");
                 }
 
-                let (buf_index, buf) = encoder.get_free_surface().unwrap();
-                let dst_stride = buf.stride();
+                let frame = encoder.request_frame()?;
+                let [y, uv, _, _] = frame.planes_mut();
+                let mut y = y.unwrap();
+                let mut uv = uv.unwrap();
+
                 let src = bgra_buffer.lock().unwrap();
 
                 if src.len() != (width * height * 4) as usize {
@@ -319,28 +342,69 @@ fn encoding_thread(
                     continue;
                 }
 
-                for row in 0..height {
-                    let src_offset = (row * width * 4) as usize;
-                    let dst_offset = (row * dst_stride as u32) as usize * 4;
-                    let len = (width * 4) as usize;
-
-                    buf.data_mut()[dst_offset..dst_offset + len]
-                        .copy_from_slice(&src[src_offset..src_offset + len]);
-                }
+                dcp::convert_image(
+                    width,
+                    height,
+                    &dcp_src_format,
+                    None,
+                    &[src.as_slice()],
+                    &dcp_dst_format,
+                    Some(&[y.line_size(), uv.line_size()]),
+                    &mut [y.data(), uv.data()],
+                )?;
 
                 let encoding_start = Instant::now();
-                if let Some(data) =
-                    encoder.encode_frame(buf_index, receiver_count > last_receiver_count)?
-                {
-                    encoded_frames_local.inc();
-                    encoding_latency_ms_local
-                        .observe(encoding_start.elapsed().as_secs_f64() * 1000.0);
+                encoder.send_frame(pts)?;
+                pts += 1;
+
+                while let Some(packet) = encoder.receive_packet()? {
+                    let data = if let Some(data) = packet.data() {
+                        data
+                    } else {
+                        continue;
+                    };
 
                     tracing::trace!("Sending frame");
+
+                    if !sps_pps_sent {
+                        let cursor = std::io::Cursor::new(data);
+                        let mut reader = H264Reader::new(cursor, 1024 * 1024);
+                        while let Ok(nal) = reader.next_nal() {
+                            match nal.unit_type {
+                                NalUnitType::SPS => {
+                                    let mut cur_sps = vec![0, 0, 0, 1];
+                                    cur_sps.extend_from_slice(&nal.data);
+                                    sps = Some(cur_sps);
+                                }
+                                NalUnitType::PPS => {
+                                    let mut cur_pps = vec![0, 0, 0, 1];
+                                    cur_pps.extend_from_slice(&nal.data);
+                                    pps = Some(cur_pps);
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        if let (Some(sps), Some(pps)) = (&sps, &pps) {
+                            codec_data_tx
+                                .send(Some(VideoCodecData::H264 {
+                                    sps: sps.clone().into(),
+                                    pps: pps.clone().into(),
+                                }))
+                                .ok();
+
+                            sps_pps_sent = true;
+
+                            tracing::info!("SPS/PPS sent");
+                        }
+                    }
 
                     let sample = Sample::new(data, timestamp, sample_duration);
                     data_tx.send(sample).ok();
                 }
+
+                encoded_frames_local.inc();
+                encoding_latency_ms_local.observe(encoding_start.elapsed().as_secs_f64() * 1000.0);
                 last_receiver_count = receiver_count;
             }
             EncodingCommand::Configure {
@@ -364,31 +428,49 @@ fn encoding_thread(
 
                 tracing::info!(?width, ?height, ?framerate, "Configuring encoder with");
 
-                let config = EncoderConfig::new(RequiredFields {
-                    width: width as u16,
-                    height: height as u16,
-                    codec: mfx_dispatch::builder::Codec::H264 {
-                        profile: Some(mfx_dispatch::builder::H264Profile::Baseline),
-                    },
-                    framerate: (framerate as u16, 1),
-                    format: mfx_dispatch::buffer::InputFormat::RGB4,
-                })
-                .with_rate_control(RateControlMethod::IntelligentConstantQuality { quality: 10 });
+                let mut device_context = None;
+                let mut codec = Codec::find_by_name("libx264").unwrap();
 
-                let e = if let Some(encoder) = &mut encoder {
-                    encoder.reset(config)?;
-                    encoder
-                } else {
-                    encoder = Some(mfx_dispatch::Pipeline::new(config)?);
-                    encoder.as_mut().unwrap()
-                };
+                for hw_codec_name in &["h264_qsv", "h264_nvenc", "h264_amf"] {
+                    let hw_codec = if let Some(codec) = Codec::find_by_name(hw_codec_name) {
+                        codec
+                    } else {
+                        continue;
+                    };
 
-                codec_data_tx
-                    .send(Some(VideoCodecData::H264 {
-                        sps: e.sps().to_vec().into(),
-                        pps: e.pps().to_vec().into(),
-                    }))
-                    .ok();
+                    for hw_config in hw_codec.hw_configs() {
+                        if !hw_config.methods.contains(HwCodecSetupMethod::HwDeviceCtx) {
+                            continue;
+                        }
+
+                        if let Ok(ctx) = HwDeviceContext::new(hw_config.device_type) {
+                            device_context = Some(ctx);
+                            codec = hw_codec;
+                            break;
+                        }
+                    }
+
+                    if device_context.is_some() {
+                        break;
+                    }
+                }
+
+                let mut ctx = CodecContext::new(codec);
+                ctx.set_size(width, height)
+                    .set_framerate(framerate, 1)
+                    .set_time_base(1, framerate)
+                    .set_pix_fmt(ffmpeg_simple::ffi::AVPixelFormat_AV_PIX_FMT_NV12)
+                    .set_global_quality(25)
+                    .set_option("profile", "baseline")?
+                    .set_option("b_strategy", "0")?
+                    .set_option("idr_interval", "1")?;
+                if let Some(device_context) = device_context {
+                    ctx.set_hw_device_ctx(device_context);
+                }
+
+                encoder = Some(ctx.open()?);
+
+                sps_pps_sent = false;
 
                 tracing::info!("Encoder configured");
             }

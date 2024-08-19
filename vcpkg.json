@@ -1,0 +1,13 @@
+{
+  "dependencies": [
+    "ffnvcodec",
+    "mfx-dispatch",
+    "opus",
+    {
+      "name": "x264",
+      "features": [
+        "asm"
+      ]
+    }
+  ]
+}

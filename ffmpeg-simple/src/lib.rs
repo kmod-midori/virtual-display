@@ -244,6 +244,13 @@ impl CodecContext {
         self
     }
 
+    pub fn set_global_quality(&mut self, quality: i32) -> &mut Self {
+        unsafe {
+            (*self.raw).global_quality = quality;
+        }
+        self
+    }
+
     pub fn set_pix_fmt(&mut self, pix_fmt: ffi::AVPixelFormat) -> &mut Self {
         unsafe {
             (*self.raw).pix_fmt = pix_fmt;

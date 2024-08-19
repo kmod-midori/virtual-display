@@ -16,7 +16,6 @@ use once_cell::sync::OnceCell;
 mod adb;
 mod app;
 mod audio;
-mod encoder;
 mod metrics;
 mod monitor;
 mod server;
@@ -259,6 +258,7 @@ pub fn main() -> Result<()> {
         .with_env_filter("debug,webrtc_sctp=info,hyper=info,webrtc_mdns::conn=off")
         .init();
     metrics::init();
+    ffmpeg_simple::init_logging();
 
     unsafe {
         if let Err(e) = MFStartup(

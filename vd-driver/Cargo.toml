@@ -36,10 +36,8 @@ tokio = { version = "1.24.2", features = ["full"] }
 crossbeam = "0.8.2"
 
 # Video
-x264 = { path = "../x264" }
+ffmpeg-simple = { path = "../ffmpeg-simple" }
 dcv-color-primitives = "0.5.1"
-mfx-dispatch = { path = "../mfx-dispatch" }
-nvcodec = { path = "../nvcodec" }
 
 # Audio
 opus = { path = "../opus" }
